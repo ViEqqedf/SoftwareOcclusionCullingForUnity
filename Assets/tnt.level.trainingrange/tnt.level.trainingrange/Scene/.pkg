@@ -1,0 +1,11 @@
+[[subscene]]
+
+patterns = [
+    "**/*.unity",
+    "!**/Subscene/**",
+]
+
+[[file]]
+patterns = [
+    "**/*.bin"
+]
