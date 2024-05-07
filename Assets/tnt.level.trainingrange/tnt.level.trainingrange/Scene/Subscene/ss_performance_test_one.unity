@@ -10109,7 +10109,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   mouseSensitivity: 5
-  movementSpeed: 20
+  movementSpeed: 100
   _height: 5
 --- !u!114 &1753633471
 MonoBehaviour:

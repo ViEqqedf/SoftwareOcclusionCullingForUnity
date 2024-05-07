@@ -2,6 +2,7 @@
 using Unity.Collections;
 using Unity.Mathematics;
 using UnityEngine;
+using UnityEngine.Rendering;
 
 namespace ViE.SOC.Runtime.Utils {
     public struct FrustumPlane {
@@ -9,17 +10,17 @@ namespace ViE.SOC.Runtime.Utils {
         public float disToOrigin;
     }
 
-    public static class MathUtils {
+    public static class CullingUtils {
         public static bool FrustumCulling(NativeArray<FrustumPlane> planes, float3 center, float radius = 1f) {
             for (int i = 0; i < 6; i++) {
                 var frustumPlane = planes[i];
                 float dis = math.dot(frustumPlane.normal, center) + frustumPlane.disToOrigin;
                 if (dis < -radius) {
-                    return true;
+                    return false;
                 }
             }
 
-            return false;
+            return true;
         }
 
         public static FrustumPlane GetPlane(float3 fstFarPlanePoint, float3 sndFarPlanePoint, float3 cameraPos) {
@@ -39,6 +40,14 @@ namespace ViE.SOC.Runtime.Utils {
             float screenScale = 0.5f * Mathf.Max(projMatrix.m00, projMatrix.m11);
             float screenRadius = screenScale * sphereRadius / Mathf.Max(1.0f, distance);
             return screenRadius * 2.0f;
+        }
+
+        public static bool IsMaterialTransparent(Material mat) {
+            if (mat == null) {
+                return false;
+            }
+
+            return mat.renderQueue == (int)RenderQueue.Transparent;
         }
     }
 }
