@@ -10,8 +10,8 @@ namespace ViE.SOC.Runtime.Components {
         public int index;
     }
 
-    public struct CullingOccluder {
-        public float screenSize;
-        public MeshRenderer meshRenderer;
+    public struct CullingVertexInfo {
+        public float3 vertex;
+        public int modelMatrixIndex;
     }
 }
