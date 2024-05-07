@@ -1,7 +1,9 @@
 ﻿using System;
 using System.Collections.Generic;
+using Unity.Burst;
 using Unity.Collections;
 using Unity.Jobs;
+using Unity.Jobs.LowLevel.Unsafe;
 using Unity.Mathematics;
 using UnityEngine;
 using UnityEngine.Profiling;
@@ -12,7 +14,7 @@ namespace ViE.SOC.Runtime {
     public class OcclusionCulling : MonoBehaviour {
         private const float minScreenRadiusForOccluder = 0.02f;
 
-        private JobHandle tickJobHandle;
+        private JobHandle dependency;
 
         private Plane[] tempPlanes;
         private NativeArray<FrustumPlane> frustumPlaneArr;
@@ -22,11 +24,20 @@ namespace ViE.SOC.Runtime {
         private NativeList<CullingItem> occluderList;
         private NativeList<CullingItem> occludeeList;
 
-        private NativeList<CullingVertexInfo> cullingOccluderVertexList;
-        private NativeList<CullingVertexInfo> cullingOccludeeVertexList;
-        private NativeList<float4x4> cullingItemModelMatrixList;
+        private List<Vector3> cullingOccluderVertexList;
+        private List<Vector3> cullingOccludeeVertexList;
+        private CullingVertexInfo[] cullingOccluderVertexTempArr;
+        private CullingVertexInfo[] cullingOccludeeVertexTempArr;
+        private NativeArray<CullingVertexInfo> cullingOccluderVertexArr;
+        private NativeArray<CullingVertexInfo> cullingOccludeeVertexArr;
+        private NativeArray<float3> cullingOccluderProjVertexArr;
+        private NativeArray<float3> cullingOccludeeProjVertexArr;
+        private NativeList<float4x4> occluderModelMatrixList;
+        private NativeList<float4x4> occludeeModelMatrixList;
 
         private void Start() {
+            JobsUtility.JobWorkerCount = 4;
+
             tempPlanes = new Plane[6];
             frustumPlaneArr = new NativeArray<FrustumPlane>(6, Allocator.Persistent);
             mfList = new List<MeshFilter>();
@@ -34,23 +45,38 @@ namespace ViE.SOC.Runtime {
 
             occluderList = new NativeList<CullingItem>(Allocator.Persistent);
             occludeeList = new NativeList<CullingItem>(Allocator.Persistent);
-            cullingOccluderVertexList = new NativeList<CullingVertexInfo>(Allocator.Persistent);
-            cullingOccludeeVertexList = new NativeList<CullingVertexInfo>(Allocator.Persistent);
-            cullingItemModelMatrixList = new NativeList<float4x4>(Allocator.Persistent);
+
+            cullingOccluderVertexList = new List<Vector3>();
+            cullingOccludeeVertexList = new List<Vector3>();
+            cullingOccluderVertexTempArr = new CullingVertexInfo[1048576];
+            cullingOccludeeVertexTempArr = new CullingVertexInfo[1048576];
+            cullingOccluderVertexArr = new NativeArray<CullingVertexInfo>(1048576, Allocator.Persistent);
+            cullingOccludeeVertexArr = new NativeArray<CullingVertexInfo>(1048576, Allocator.Persistent);
+            cullingOccluderProjVertexArr = new NativeArray<float3>(1048576, Allocator.Persistent);
+            cullingOccludeeProjVertexArr = new NativeArray<float3>(1048576, Allocator.Persistent);
+            occluderModelMatrixList = new NativeList<float4x4>(Allocator.Persistent);
+            occludeeModelMatrixList = new NativeList<float4x4>(Allocator.Persistent);
         }
 
         private void OnDestroy() {
+            dependency.Complete();
+
             frustumPlaneArr.Dispose();
             cullingItemList.Dispose();
             occluderList.Dispose();
             occludeeList.Dispose();
-            cullingOccluderVertexList.Dispose();
-            cullingOccludeeVertexList.Dispose();
-            cullingItemModelMatrixList.Dispose();
+            cullingOccluderVertexArr.Dispose();
+            cullingOccludeeVertexArr.Dispose();
+            cullingOccluderProjVertexArr.Dispose();
+            cullingOccludeeProjVertexArr.Dispose();
+            occluderModelMatrixList.Dispose();
+            occludeeModelMatrixList.Dispose();
+
+            JobsUtility.ResetJobWorkerCount();
         }
 
         private void Update() {
-            tickJobHandle.Complete();
+            dependency.Complete();
 
             Camera mainCamera = Camera.main;
 
@@ -134,6 +160,7 @@ namespace ViE.SOC.Runtime {
                 var item = cullingItemList[i];
                 float itemScreenSize = CullingUtils.ComputeBoundsScreenSize(
                     camera.transform.position, item.center, item.boundRadius, camera.projectionMatrix);
+                // TODO: 使用额外的容器来做修改，然后 CopyTo
                 cullingItemList[i] = new CullingItem() {
                     center = item.center,
                     boundRadius = item.boundRadius,
@@ -174,11 +201,24 @@ namespace ViE.SOC.Runtime {
         #region ProcessGeometry
 
         private void ProcessGeometry(Camera camera) {
+            VerticesTransfer(camera);
+        }
+
+        private void VerticesTransfer(Camera camera) {
+            // cullingOccluderVertexArr.Clear();
+            // cullingOccludeeVertexArr.Clear();
             cullingOccluderVertexList.Clear();
             cullingOccludeeVertexList.Clear();
-            cullingItemModelMatrixList.Clear();
+            occluderModelMatrixList.Clear();
+            occludeeModelMatrixList.Clear();
 
+            var vMatrix = camera.worldToCameraMatrix;
+            var pMatrix = camera.projectionMatrix;
+            var vpMatrix = vMatrix * pMatrix;
+
+            Profiler.BeginSample("[ViE] OccluderTransfer");
             #region Occluder Transfer
+            int occluderVertexArrLength = 0;
             int mMatrixIdx = 0;
 
             for (int i = 0, count = occluderList.Length; i < count; i++) {
@@ -186,22 +226,40 @@ namespace ViE.SOC.Runtime {
                 MeshFilter mf = mfList[occluder.index];
 
                 Mesh mesh = mf.mesh;
-                for (int j = 0, vertexCount = mesh.vertices.Length; j < vertexCount; j++) {
-                    Vector3 vertex = mesh.vertices[j];
+                mesh.GetVertices(cullingOccluderVertexList);
 
-                    cullingOccluderVertexList.Add(new CullingVertexInfo() {
+                for (int j = 0, vertexCount = cullingOccluderVertexList.Count; j < vertexCount; j++) {
+                    Vector3 vertex = cullingOccluderVertexList[j];
+                    cullingOccluderVertexTempArr[occluderVertexArrLength++] = new CullingVertexInfo() {
                         vertex = vertex,
                         modelMatrixIndex = mMatrixIdx,
-                    });
+                    };
+
+                    // cullingOccluderVertexArr.Add(new CullingVertexInfo() {
+                    //     vertex = vertex,
+                    //     modelMatrixIndex = mMatrixIdx,
+                    // });
                 }
 
                 float4x4 mMatrix = mf.transform.localToWorldMatrix;
-                cullingItemModelMatrixList.Add(mMatrix);
+                occluderModelMatrixList.Add(mMatrix);
                 mMatrixIdx++;
             }
-            #endregion
 
+            cullingOccluderVertexArr.CopyFrom(cullingOccluderVertexTempArr);
+
+            dependency = new CullingVerticesTransferJob() {
+                vpMatrix = vpMatrix,
+                vertices = cullingOccluderVertexArr,
+                clipVerticesResult = cullingOccluderProjVertexArr,
+            }.Schedule(occluderVertexArrLength, 10, dependency);
+            #endregion
+            Profiler.EndSample();
+
+            Profiler.BeginSample("[ViE] OccludeeTransfer");
             #region Occludee Transfer
+            int occludeeVertexArrLength = 0;
+
             for (int i = 0, count = occludeeList.Length; i < count; i++) {
                 var occludee = occludeeList[i];
                 MeshFilter mf = mfList[occludee.index];
@@ -210,59 +268,66 @@ namespace ViE.SOC.Runtime {
                 Vector3 max = bounds.max;
                 Vector3 min = bounds.min;
                 #region Add Vertices
-                cullingOccludeeVertexList.Add(new CullingVertexInfo() {
+                cullingOccludeeVertexTempArr[occludeeVertexArrLength++] = new CullingVertexInfo() {
                     vertex = max,
                     modelMatrixIndex = mMatrixIdx,
-                });
-                cullingOccludeeVertexList.Add(new CullingVertexInfo() {
+                };
+                cullingOccludeeVertexTempArr[occludeeVertexArrLength++] = new CullingVertexInfo() {
                     vertex = new float3(bounds.min.x, bounds.max.y, bounds.max.z),
                     modelMatrixIndex = mMatrixIdx,
-                });
-                cullingOccludeeVertexList.Add(new CullingVertexInfo() {
+                };
+                cullingOccludeeVertexTempArr[occludeeVertexArrLength++] = new CullingVertexInfo() {
                     vertex = new float3(bounds.min.x, bounds.max.y, bounds.min.z),
                     modelMatrixIndex = mMatrixIdx,
-                });
-                cullingOccludeeVertexList.Add(new CullingVertexInfo() {
+                };
+                cullingOccludeeVertexTempArr[occludeeVertexArrLength++] = new CullingVertexInfo() {
                     vertex = new float3(bounds.max.x, bounds.max.y, bounds.min.z),
                     modelMatrixIndex = mMatrixIdx,
-                });
-                cullingOccludeeVertexList.Add(new CullingVertexInfo() {
+                };
+                cullingOccludeeVertexTempArr[occludeeVertexArrLength++] = new CullingVertexInfo() {
                     vertex = new float3(bounds.max.x, bounds.min.y, bounds.max.z),
                     modelMatrixIndex = mMatrixIdx,
-                });
-                cullingOccludeeVertexList.Add(new CullingVertexInfo() {
+                };
+                cullingOccludeeVertexTempArr[occludeeVertexArrLength++] = new CullingVertexInfo() {
                     vertex = new float3(bounds.min.x, bounds.min.y, bounds.max.z),
                     modelMatrixIndex = mMatrixIdx,
-                });
-                cullingOccludeeVertexList.Add(new CullingVertexInfo() {
+                };
+                cullingOccludeeVertexTempArr[occludeeVertexArrLength++] = new CullingVertexInfo() {
                     vertex = min,
                     modelMatrixIndex = mMatrixIdx,
-                });
-                cullingOccludeeVertexList.Add(new CullingVertexInfo() {
+                };
+                cullingOccludeeVertexTempArr[occludeeVertexArrLength++] = new CullingVertexInfo() {
                     vertex = new float3(bounds.max.x, bounds.min.y, bounds.min.z),
                     modelMatrixIndex = mMatrixIdx,
-                });
+                };
                 #endregion
 
                 float4x4 mMatrix = mf.transform.localToWorldMatrix;
-                cullingItemModelMatrixList.Add(mMatrix);
+                occludeeModelMatrixList.Add(mMatrix);
                 mMatrixIdx++;
             }
-            #endregion
 
-            var vMatrix = camera.worldToCameraMatrix;
-            var pMatrix = camera.projectionMatrix;
-            tickJobHandle = new VertexTransformJob() {
-                vMatrix = vMatrix,
-                pMatrix = pMatrix,
-            }.Schedule(1000, 100);
+            cullingOccludeeVertexArr.CopyFrom(cullingOccludeeVertexTempArr);
+
+            dependency = new CullingVerticesTransferJob() {
+                vpMatrix = vpMatrix,
+                vertices = cullingOccludeeVertexArr,
+                clipVerticesResult = cullingOccludeeProjVertexArr,
+            }.Schedule(occludeeVertexArrLength, 10, dependency);
+            #endregion
+            Profiler.EndSample();
         }
 
-        private struct VertexTransformJob : IJobParallelFor {
-            public float4x4 vMatrix;
-            public float4x4 pMatrix;
+        [BurstCompile]
+        private struct CullingVerticesTransferJob : IJobParallelFor {
+            public float4x4 vpMatrix;
+            [ReadOnly] public NativeArray<CullingVertexInfo> vertices;
+            public NativeArray<float3> clipVerticesResult;
 
             public void Execute(int index) {
+                float3 vertex = vertices[index].vertex;
+                float4 mulResult = math.mul(vpMatrix, new float4(vertex.x, vertex.y, vertex.z, 0));
+                clipVerticesResult[index] = new float3(mulResult.x, mulResult.y, mulResult.z);
             }
         }
 
