@@ -47,11 +47,8 @@ namespace ViE.SOC.Runtime {
         private NativeList<float4x4> occluderModelMatrixList;
         private NativeList<float4x4> occludeeModelMatrixList;
 
-        private NativeArray<float4> occluderScreenVertexArr;
-        private NativeArray<short> occluderScreenTriMidIdxArr;
-        private NativeArray<float> occluderTriDepthCacheArr;
-        private NativeArray<float4> occludeeScreenVertexArr;
-        private NativeArray<float> occludeeTriDepthCacheArr;
+        private NativeArray<TriangleInfo> occluderScreenTriArr;
+        private NativeArray<TriangleInfo> occludeeScreenTriArr;
 
         private void Start() {
             JobsUtility.JobWorkerCount = 4;
@@ -78,11 +75,8 @@ namespace ViE.SOC.Runtime {
             occluderModelMatrixList = new NativeList<float4x4>(Allocator.Persistent);
             occludeeModelMatrixList = new NativeList<float4x4>(Allocator.Persistent);
 
-            occluderScreenVertexArr = new NativeArray<float4>(DEFAULT_CONTAINER_SIZE / 3, Allocator.Persistent);
-            occluderScreenTriMidIdxArr = new NativeArray<short>(DEFAULT_CONTAINER_SIZE / 3, Allocator.Persistent);
-            occluderTriDepthCacheArr = new NativeArray<float>(DEFAULT_CONTAINER_SIZE / 3, Allocator.Persistent);
-            occludeeScreenVertexArr = new NativeArray<float4>(DEFAULT_CONTAINER_SIZE, Allocator.Persistent);
-            occludeeTriDepthCacheArr = new NativeArray<float>(DEFAULT_CONTAINER_SIZE / 3, Allocator.Persistent);
+            occluderScreenTriArr = new NativeArray<TriangleInfo>(DEFAULT_CONTAINER_SIZE / 3, Allocator.Persistent);
+            occludeeScreenTriArr = new NativeArray<TriangleInfo>(DEFAULT_CONTAINER_SIZE / 3, Allocator.Persistent);
         }
 
         private void OnDestroy() {
@@ -100,11 +94,8 @@ namespace ViE.SOC.Runtime {
             occluderModelMatrixList.Dispose();
             occludeeModelMatrixList.Dispose();
 
-            occluderScreenVertexArr.Dispose();
-            occluderScreenTriMidIdxArr.Dispose();
-            occluderTriDepthCacheArr.Dispose();
-            occludeeScreenVertexArr.Dispose();
-            occludeeTriDepthCacheArr.Dispose();
+            occluderScreenTriArr.Dispose();
+            occludeeScreenTriArr.Dispose();
 
             JobsUtility.ResetJobWorkerCount();
         }
@@ -130,7 +121,6 @@ namespace ViE.SOC.Runtime {
         }
 
         #region FrustumCulling
-
         private void FrustumCulling(Camera camera) {
             mfList.Clear();
             cullingItemList.Clear();
@@ -181,11 +171,9 @@ namespace ViE.SOC.Runtime {
                 // }
             }
         }
-
         #endregion
 
         #region CollectCullingItem
-
         private void CollectCullingItem(Camera camera) {
             occluderList.Clear();
             occludeeList.Clear();
@@ -230,7 +218,6 @@ namespace ViE.SOC.Runtime {
                 return fst.index.CompareTo(snd.index);
             }
         }
-
         #endregion
 
         private void ProcessGeometry(Camera camera) {
@@ -239,7 +226,6 @@ namespace ViE.SOC.Runtime {
         }
 
         #region VerticeTransfer
-
         private void VerticesTransfer(Camera camera) {
             // cullingOccluderVertexArr.Clear();
             // cullingOccludeeVertexArr.Clear();
@@ -387,16 +373,12 @@ namespace ViE.SOC.Runtime {
                 clipVerticesResult[index] = mulResult;
             }
         }
-
         #endregion
 
         #region TriangleHandle
 
-        private unsafe void TriangleHandle() {
+        private void TriangleHandle() {
             cullingOccluderTriNativeList.Clear();
-
-            var depthArrPtr = occluderTriDepthCacheArr.GetUnsafePtr();
-            UnsafeUtility.MemClear(depthArrPtr, FRAMEBUFFER_WIDTH * FRAMEBUFFER_HEIGHT * sizeof(int));
 
             int occluderTriCount = cullingOccluderTriList.Count;
             for (int i = 0; i < occluderTriCount; i++) {
@@ -406,15 +388,12 @@ namespace ViE.SOC.Runtime {
             dependency = new OccluderTriHandleJob() {
                 triIdxArr = cullingOccluderTriNativeList.AsArray(),
                 vertexArr = cullingOccluderProjVertexArr,
-                screenVertexArr = occluderScreenVertexArr,
-                screenTriMidIdxArr = occluderScreenTriMidIdxArr,
-                triDepthCacheArr = occluderTriDepthCacheArr,
+                screenTriArr = occluderScreenTriArr,
             }.Schedule(occluderTriCount, 10, dependency);
 
             dependency = new OccludeeTriHandleJob() {
                 vertexArr = cullingOccludeeProjVertexArr,
-                screenVertexArr = occludeeScreenVertexArr,
-                triDepthCacheArr = occludeeTriDepthCacheArr,
+                screenTriArr = occluderScreenTriArr,
             }.Schedule(occludeeList.Length, 10, dependency);
         }
 
@@ -424,11 +403,7 @@ namespace ViE.SOC.Runtime {
             [ReadOnly]
             public NativeArray<float4> vertexArr;
             [NativeDisableParallelForRestriction]
-            public NativeArray<float4> screenVertexArr;
-            [NativeDisableParallelForRestriction]
-            public NativeArray<short> screenTriMidIdxArr;
-            [NativeDisableParallelForRestriction]
-            public NativeArray<float> triDepthCacheArr;
+            public NativeArray<TriangleInfo> screenTriArr;
 
             public void Execute(int index) {
                 int4 curTri = triIdxArr[index];
@@ -471,13 +446,8 @@ namespace ViE.SOC.Runtime {
                         (v1, v2) = (v2, v1);
                     }
 
-                    screenVertexArr[curTri.x + curTri.w] = v0;
-                    screenVertexArr[curTri.y + curTri.w] = v1;
-                    screenVertexArr[curTri.z + curTri.w] = v2;
-
                     // mid vertex
                     short midVertexIdx = v1.y < v2.y ? (short)1 : (short)2;
-                    screenTriMidIdxArr[index] = midVertexIdx;
 
                     // depth
                     float farthestDepth = v0.z;
@@ -491,11 +461,17 @@ namespace ViE.SOC.Runtime {
                         farthestDepth = v2.z;
                     }
 
-                    // Debug.Log($"[ViE] 三角形{index} 的 v0({v0}) 深度为 {v0.z}");
-                    // Debug.Log($"[ViE] 三角形{index} 的 v1({v1}) 深度为 {v1.z}");
-                    // Debug.Log($"[ViE] 三角形{index} 的 v2({v2}) 深度为 {v2.z}");
+                    screenTriArr[index] = new TriangleInfo() {
+                        v0 = v0,
+                        v1 = v1,
+                        v2 = v2,
+                        depth = farthestDepth,
+                        midVertexIdx = midVertexIdx,
+                    };
 
-                    triDepthCacheArr[index] = farthestDepth;
+                    Debug.Log($"[ViE] 三角形{index} 的 v0({v0}) 深度为 {v0.z}");
+                    Debug.Log($"[ViE] 三角形{index} 的 v1({v1}) 深度为 {v1.z}");
+                    Debug.Log($"[ViE] 三角形{index} 的 v2({v2}) 深度为 {v2.z}");
                 }
             }
         }
@@ -504,9 +480,7 @@ namespace ViE.SOC.Runtime {
         private struct OccludeeTriHandleJob : IJobParallelFor {
             [ReadOnly] public NativeArray<float4> vertexArr;
             [NativeDisableParallelForRestriction]
-            public NativeArray<float4> screenVertexArr;
-            [NativeDisableParallelForRestriction]
-            public NativeArray<float> triDepthCacheArr;
+            public NativeArray<TriangleInfo> screenTriArr;
 
             public void Execute(int index) {
                 int start = index * 8;
@@ -547,11 +521,12 @@ namespace ViE.SOC.Runtime {
                     }
                 }
 
-                screenVertexArr[index * 3] = min;
-                screenVertexArr[index * 3 + 1] = new float4(max.x, min.y, 0, 0);
-                screenVertexArr[index * 3 + 2] = max;
-
-                triDepthCacheArr[index] = minDepth;
+                screenTriArr[index] = new TriangleInfo() {
+                    v0 = min,
+                    v1 = new float4(max.x, min.y, 0, 0),
+                    v2 = max,
+                    depth = minDepth,
+                };
             }
         }
 
