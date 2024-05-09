@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using Unity.Burst;
 using Unity.Collections;
+using Unity.Collections.LowLevel.Unsafe;
 using Unity.Jobs;
 using Unity.Jobs.LowLevel.Unsafe;
 using Unity.Mathematics;
@@ -12,7 +13,15 @@ using ViE.SOC.Runtime.Utils;
 
 namespace ViE.SOC.Runtime {
     public class OcclusionCulling : MonoBehaviour {
-        private const float minScreenRadiusForOccluder = 0.02f;
+        private const int DEFAULT_CONTAINER_SIZE = 1048576;
+        private const float MIN_SCREEN_RADIUS_FOR_OCCLUDER = 0.02f;
+        private const int FRAMEBUFFER_WIDTH = 256;
+        private const int FRAMEBUFFER_HEIGHT = 128;
+        private static readonly float4x4 fbMatrix = new float4x4(
+            new float4(FRAMEBUFFER_WIDTH * 0.5f, 0, 0, 0),
+            new float4(0, FRAMEBUFFER_WIDTH * 0.5f, 0, FRAMEBUFFER_HEIGHT * 0.5f),
+            new float4(0, 0, 1, 0),
+            new float4(0, 0, 0, 1));
 
         private JobHandle dependency;
 
@@ -30,10 +39,17 @@ namespace ViE.SOC.Runtime {
         private CullingVertexInfo[] cullingOccludeeVertexTempArr;
         private NativeArray<CullingVertexInfo> cullingOccluderVertexArr;
         private NativeArray<CullingVertexInfo> cullingOccludeeVertexArr;
-        private NativeArray<float3> cullingOccluderProjVertexArr;
-        private NativeArray<float3> cullingOccludeeProjVertexArr;
+        private NativeArray<float4> cullingOccluderProjVertexArr;
+        private NativeArray<float4> cullingOccludeeProjVertexArr;
+        private List<int> tempTriList;
+        private List<int4> cullingOccluderTriList;
+        private List<int4> cullingOccludeeTriList;
+        private NativeList<int4> cullingOccluderTriNativeList;
+        private NativeList<int4> cullingOccludeeTriNativeList;
         private NativeList<float4x4> occluderModelMatrixList;
         private NativeList<float4x4> occludeeModelMatrixList;
+
+        private NativeArray<float> occluderDepthCacheArr;
 
         private void Start() {
             JobsUtility.JobWorkerCount = 4;
@@ -48,14 +64,21 @@ namespace ViE.SOC.Runtime {
 
             cullingOccluderVertexList = new List<Vector3>();
             cullingOccludeeVertexList = new List<Vector3>();
-            cullingOccluderVertexTempArr = new CullingVertexInfo[1048576];
-            cullingOccludeeVertexTempArr = new CullingVertexInfo[1048576];
-            cullingOccluderVertexArr = new NativeArray<CullingVertexInfo>(1048576, Allocator.Persistent);
-            cullingOccludeeVertexArr = new NativeArray<CullingVertexInfo>(1048576, Allocator.Persistent);
-            cullingOccluderProjVertexArr = new NativeArray<float3>(1048576, Allocator.Persistent);
-            cullingOccludeeProjVertexArr = new NativeArray<float3>(1048576, Allocator.Persistent);
+            cullingOccluderVertexTempArr = new CullingVertexInfo[DEFAULT_CONTAINER_SIZE];
+            cullingOccludeeVertexTempArr = new CullingVertexInfo[DEFAULT_CONTAINER_SIZE];
+            cullingOccluderVertexArr = new NativeArray<CullingVertexInfo>(DEFAULT_CONTAINER_SIZE, Allocator.Persistent);
+            cullingOccludeeVertexArr = new NativeArray<CullingVertexInfo>(DEFAULT_CONTAINER_SIZE, Allocator.Persistent);
+            cullingOccluderProjVertexArr = new NativeArray<float4>(DEFAULT_CONTAINER_SIZE, Allocator.Persistent);
+            cullingOccludeeProjVertexArr = new NativeArray<float4>(DEFAULT_CONTAINER_SIZE, Allocator.Persistent);
+            tempTriList = new List<int>();
+            cullingOccluderTriList = new List<int4>();
+            cullingOccludeeTriList = new List<int4>();
+            cullingOccluderTriNativeList = new NativeList<int4>(Allocator.Persistent);
+            cullingOccludeeTriNativeList = new NativeList<int4>(Allocator.Persistent);
             occluderModelMatrixList = new NativeList<float4x4>(Allocator.Persistent);
             occludeeModelMatrixList = new NativeList<float4x4>(Allocator.Persistent);
+
+            occluderDepthCacheArr = new NativeArray<float>(FRAMEBUFFER_WIDTH * FRAMEBUFFER_HEIGHT, Allocator.Persistent);
         }
 
         private void OnDestroy() {
@@ -69,8 +92,12 @@ namespace ViE.SOC.Runtime {
             cullingOccludeeVertexArr.Dispose();
             cullingOccluderProjVertexArr.Dispose();
             cullingOccludeeProjVertexArr.Dispose();
+            cullingOccluderTriNativeList.Dispose();
+            cullingOccludeeTriNativeList.Dispose();
             occluderModelMatrixList.Dispose();
             occludeeModelMatrixList.Dispose();
+
+            occluderDepthCacheArr.Dispose();
 
             JobsUtility.ResetJobWorkerCount();
         }
@@ -170,15 +197,16 @@ namespace ViE.SOC.Runtime {
                 };
                 item = cullingItemList[i];
 
-                if (!item.hasTransparentMat && itemScreenSize > minScreenRadiusForOccluder) {
+                if (!item.hasTransparentMat && itemScreenSize > MIN_SCREEN_RADIUS_FOR_OCCLUDER) {
                     occluderList.Add(item);
                     // mrList[item.index].enabled = true;
                     // Debug.Log($"[ViE] 屏占比达标");
                 } else {
-                    occludeeList.Add(item);
                     // mrList[item.index].enabled = false;
                     // Debug.Log($"[ViE] 屏占比不达标");
                 }
+
+                occludeeList.Add(item);
             }
 
             OccluderSorter occluderSorter = new OccluderSorter();
@@ -198,11 +226,12 @@ namespace ViE.SOC.Runtime {
 
         #endregion
 
-        #region ProcessGeometry
-
         private void ProcessGeometry(Camera camera) {
             VerticesTransfer(camera);
+            TriangleHandle();
         }
+
+        #region VerticeTransfer
 
         private void VerticesTransfer(Camera camera) {
             // cullingOccluderVertexArr.Clear();
@@ -211,9 +240,12 @@ namespace ViE.SOC.Runtime {
             cullingOccludeeVertexList.Clear();
             occluderModelMatrixList.Clear();
             occludeeModelMatrixList.Clear();
+            cullingOccluderTriList.Clear();
+            cullingOccludeeTriList.Clear();
 
             var vMatrix = camera.worldToCameraMatrix;
             var pMatrix = camera.projectionMatrix;
+
             var vpMatrix = vMatrix * pMatrix;
 
             Profiler.BeginSample("[ViE] OccluderTransfer");
@@ -226,22 +258,32 @@ namespace ViE.SOC.Runtime {
                 MeshFilter mf = mfList[occluder.index];
 
                 Mesh mesh = mf.mesh;
+                Profiler.BeginSample("[ViE] OccluderTransfer-GetVertices");
                 mesh.GetVertices(cullingOccluderVertexList);
+                Profiler.EndSample();
 
+                Profiler.BeginSample("[ViE] OccluderTransfer-GetTriangles");
+                tempTriList.Clear();
+                mesh.GetTriangles(tempTriList, 0);
+                int triStartIdx = tempTriList.Count;
+                for (int j = 0; j < triStartIdx; j += 3) {
+                    cullingOccluderTriList.Add(new int4(tempTriList[j], tempTriList[j + 1], tempTriList[j + 2], triStartIdx));
+                }
+                Profiler.EndSample();
+
+                Profiler.BeginSample("[ViE] OccluderTransfer-InnerLoop");
                 for (int j = 0, vertexCount = cullingOccluderVertexList.Count; j < vertexCount; j++) {
                     Vector3 vertex = cullingOccluderVertexList[j];
                     cullingOccluderVertexTempArr[occluderVertexArrLength++] = new CullingVertexInfo() {
                         vertex = vertex,
                         modelMatrixIndex = mMatrixIdx,
                     };
-
-                    // cullingOccluderVertexArr.Add(new CullingVertexInfo() {
-                    //     vertex = vertex,
-                    //     modelMatrixIndex = mMatrixIdx,
-                    // });
                 }
+                Profiler.EndSample();
 
+                Profiler.BeginSample("[ViE] OccluderTransfer-GetLocalToWorldMatrix");
                 float4x4 mMatrix = mf.transform.localToWorldMatrix;
+                Profiler.EndSample();
                 occluderModelMatrixList.Add(mMatrix);
                 mMatrixIdx++;
             }
@@ -251,6 +293,7 @@ namespace ViE.SOC.Runtime {
             dependency = new CullingVerticesTransferJob() {
                 vpMatrix = vpMatrix,
                 vertices = cullingOccluderVertexArr,
+                modelMatrixList = occluderModelMatrixList,
                 clipVerticesResult = cullingOccluderProjVertexArr,
             }.Schedule(occluderVertexArrLength, 10, dependency);
             #endregion
@@ -312,6 +355,7 @@ namespace ViE.SOC.Runtime {
             dependency = new CullingVerticesTransferJob() {
                 vpMatrix = vpMatrix,
                 vertices = cullingOccludeeVertexArr,
+                modelMatrixList = occludeeModelMatrixList,
                 clipVerticesResult = cullingOccludeeProjVertexArr,
             }.Schedule(occludeeVertexArrLength, 10, dependency);
             #endregion
@@ -322,12 +366,88 @@ namespace ViE.SOC.Runtime {
         private struct CullingVerticesTransferJob : IJobParallelFor {
             public float4x4 vpMatrix;
             [ReadOnly] public NativeArray<CullingVertexInfo> vertices;
-            public NativeArray<float3> clipVerticesResult;
+            [ReadOnly] public NativeList<float4x4> modelMatrixList;
+            public NativeArray<float4> clipVerticesResult;
 
             public void Execute(int index) {
-                float3 vertex = vertices[index].vertex;
-                float4 mulResult = math.mul(vpMatrix, new float4(vertex.x, vertex.y, vertex.z, 0));
-                clipVerticesResult[index] = new float3(mulResult.x, mulResult.y, mulResult.z);
+                CullingVertexInfo vertexInfo = vertices[index];
+                float3 vertex = vertexInfo.vertex;
+                var mvp = math.mul(modelMatrixList[vertexInfo.modelMatrixIndex], vpMatrix);
+                float4 mulResult = math.mul(mvp, new float4(vertex.x, vertex.y, vertex.z, 1));
+                clipVerticesResult[index] = mulResult;
+            }
+        }
+
+        #endregion
+
+        #region TriangleHandle
+
+        private unsafe void TriangleHandle() {
+            cullingOccluderTriNativeList.Clear();
+            cullingOccludeeTriNativeList.Clear();
+
+            var depthArrPtr = occluderDepthCacheArr.GetUnsafePtr();
+            UnsafeUtility.MemClear(depthArrPtr, FRAMEBUFFER_WIDTH * FRAMEBUFFER_HEIGHT * sizeof(int));
+
+            for (int i = 0, count = cullingOccluderTriList.Count; i < count; i++) {
+                cullingOccluderTriNativeList.Add(cullingOccluderTriList[i]);
+            }
+
+            for (int i = 0, count = cullingOccludeeTriList.Count; i < count; i++) {
+                cullingOccludeeTriNativeList.Add(cullingOccludeeTriList[i]);
+            }
+
+            dependency = new OccluderTriHandleJob() {
+                triIdxArr = cullingOccluderTriNativeList.AsArray(),
+                verticesArr = cullingOccluderProjVertexArr,
+                occluderDepthCacheArr = occluderDepthCacheArr,
+            }.Schedule(cullingOccluderTriNativeList.Length, 10, dependency);
+
+            dependency = new OccludeeTriHandleJob() {
+                triIdxArr = cullingOccludeeTriNativeList.AsArray(),
+                verticesArr = cullingOccludeeProjVertexArr,
+            }.Schedule(occludeeList.Length, 10, dependency);
+        }
+
+        [BurstCompile]
+        private struct OccluderTriHandleJob : IJobParallelFor {
+            public NativeArray<int4> triIdxArr;
+            [ReadOnly] public NativeArray<float4> verticesArr;
+            public NativeArray<float> occluderDepthCacheArr;
+
+            public void Execute(int index) {
+                int4 curTri = triIdxArr[index];
+                float4 fst = verticesArr[curTri.x + curTri.w];
+                float4 snd = verticesArr[curTri.y + curTri.w];
+                float4 trd = verticesArr[curTri.z + curTri.w];
+
+                bool needCulling = CullingUtils.TriangleCulling(fst, snd, trd);
+                if (!needCulling) {
+                    // ndc
+                    float4 ndcFst = fst / curTri.w;
+                    float4 ndcSnd = snd / curTri.w;
+                    float4 ndcTrd = trd / curTri.w;
+
+                    // screen
+                    float4 screenFst = math.mul(fbMatrix, ndcFst);
+                    float4 screenSnd = math.mul(fbMatrix, ndcSnd);
+                    float4 screenTrd = math.mul(fbMatrix, ndcTrd);
+
+                }
+            }
+        }
+
+        [BurstCompile]
+        private struct OccludeeTriHandleJob : IJobParallelFor {
+            public NativeArray<int4> triIdxArr;
+            [ReadOnly] public NativeArray<float4> verticesArr;
+
+            public void Execute(int index) {
+                int start = index * 8;
+                int end = (index + 1) * 8 - 1;
+                for (int i = start; i < end; i++) {
+
+                }
             }
         }
 
