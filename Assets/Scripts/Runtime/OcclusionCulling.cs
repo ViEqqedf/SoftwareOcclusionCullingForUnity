@@ -43,13 +43,15 @@ namespace ViE.SOC.Runtime {
         private NativeArray<float4> cullingOccludeeProjVertexArr;
         private List<int> tempTriList;
         private List<int4> cullingOccluderTriList;
-        private List<int4> cullingOccludeeTriList;
         private NativeList<int4> cullingOccluderTriNativeList;
-        private NativeList<int4> cullingOccludeeTriNativeList;
         private NativeList<float4x4> occluderModelMatrixList;
         private NativeList<float4x4> occludeeModelMatrixList;
 
-        private NativeArray<float> occluderDepthCacheArr;
+        private NativeArray<float4> occluderScreenVertexArr;
+        private NativeArray<short> occluderScreenTriMidIdxArr;
+        private NativeArray<float> occluderTriDepthCacheArr;
+        private NativeArray<float4> occludeeScreenVertexArr;
+        private NativeArray<float> occludeeTriDepthCacheArr;
 
         private void Start() {
             JobsUtility.JobWorkerCount = 4;
@@ -72,13 +74,15 @@ namespace ViE.SOC.Runtime {
             cullingOccludeeProjVertexArr = new NativeArray<float4>(DEFAULT_CONTAINER_SIZE, Allocator.Persistent);
             tempTriList = new List<int>();
             cullingOccluderTriList = new List<int4>();
-            cullingOccludeeTriList = new List<int4>();
             cullingOccluderTriNativeList = new NativeList<int4>(Allocator.Persistent);
-            cullingOccludeeTriNativeList = new NativeList<int4>(Allocator.Persistent);
             occluderModelMatrixList = new NativeList<float4x4>(Allocator.Persistent);
             occludeeModelMatrixList = new NativeList<float4x4>(Allocator.Persistent);
 
-            occluderDepthCacheArr = new NativeArray<float>(FRAMEBUFFER_WIDTH * FRAMEBUFFER_HEIGHT, Allocator.Persistent);
+            occluderScreenVertexArr = new NativeArray<float4>(DEFAULT_CONTAINER_SIZE / 3, Allocator.Persistent);
+            occluderScreenTriMidIdxArr = new NativeArray<short>(DEFAULT_CONTAINER_SIZE / 3, Allocator.Persistent);
+            occluderTriDepthCacheArr = new NativeArray<float>(FRAMEBUFFER_WIDTH * FRAMEBUFFER_HEIGHT, Allocator.Persistent);
+            occludeeScreenVertexArr = new NativeArray<float4>(DEFAULT_CONTAINER_SIZE, Allocator.Persistent);
+            occludeeTriDepthCacheArr = new NativeArray<float>(DEFAULT_CONTAINER_SIZE / 3, Allocator.Persistent);
         }
 
         private void OnDestroy() {
@@ -93,11 +97,14 @@ namespace ViE.SOC.Runtime {
             cullingOccluderProjVertexArr.Dispose();
             cullingOccludeeProjVertexArr.Dispose();
             cullingOccluderTriNativeList.Dispose();
-            cullingOccludeeTriNativeList.Dispose();
             occluderModelMatrixList.Dispose();
             occludeeModelMatrixList.Dispose();
 
-            occluderDepthCacheArr.Dispose();
+            occluderScreenVertexArr.Dispose();
+            occluderScreenTriMidIdxArr.Dispose();
+            occluderTriDepthCacheArr.Dispose();
+            occludeeScreenVertexArr.Dispose();
+            occludeeTriDepthCacheArr.Dispose();
 
             JobsUtility.ResetJobWorkerCount();
         }
@@ -241,7 +248,6 @@ namespace ViE.SOC.Runtime {
             occluderModelMatrixList.Clear();
             occludeeModelMatrixList.Clear();
             cullingOccluderTriList.Clear();
-            cullingOccludeeTriList.Clear();
 
             var vMatrix = camera.worldToCameraMatrix;
             var pMatrix = camera.projectionMatrix;
@@ -384,70 +390,153 @@ namespace ViE.SOC.Runtime {
 
         private unsafe void TriangleHandle() {
             cullingOccluderTriNativeList.Clear();
-            cullingOccludeeTriNativeList.Clear();
 
-            var depthArrPtr = occluderDepthCacheArr.GetUnsafePtr();
+            var depthArrPtr = occluderTriDepthCacheArr.GetUnsafePtr();
             UnsafeUtility.MemClear(depthArrPtr, FRAMEBUFFER_WIDTH * FRAMEBUFFER_HEIGHT * sizeof(int));
 
             for (int i = 0, count = cullingOccluderTriList.Count; i < count; i++) {
                 cullingOccluderTriNativeList.Add(cullingOccluderTriList[i]);
             }
 
-            for (int i = 0, count = cullingOccludeeTriList.Count; i < count; i++) {
-                cullingOccludeeTriNativeList.Add(cullingOccludeeTriList[i]);
-            }
-
             dependency = new OccluderTriHandleJob() {
                 triIdxArr = cullingOccluderTriNativeList.AsArray(),
-                verticesArr = cullingOccluderProjVertexArr,
-                occluderDepthCacheArr = occluderDepthCacheArr,
+                vertexArr = cullingOccluderProjVertexArr,
+                screenVertexArr = occluderScreenVertexArr,
+                screenTriMidIdxArr = occluderScreenTriMidIdxArr,
+                triDepthCacheArr = occluderTriDepthCacheArr,
             }.Schedule(cullingOccluderTriNativeList.Length, 10, dependency);
 
             dependency = new OccludeeTriHandleJob() {
-                triIdxArr = cullingOccludeeTriNativeList.AsArray(),
-                verticesArr = cullingOccludeeProjVertexArr,
+                vertexArr = cullingOccludeeProjVertexArr,
+                screenVertexArr = occludeeScreenVertexArr,
+                triDepthCacheArr = occludeeTriDepthCacheArr,
             }.Schedule(occludeeList.Length, 10, dependency);
         }
 
         [BurstCompile]
         private struct OccluderTriHandleJob : IJobParallelFor {
             public NativeArray<int4> triIdxArr;
-            [ReadOnly] public NativeArray<float4> verticesArr;
-            public NativeArray<float> occluderDepthCacheArr;
+            [ReadOnly] public NativeArray<float4> vertexArr;
+            public NativeArray<float4> screenVertexArr;
+            public NativeArray<short> screenTriMidIdxArr;
+            public NativeArray<float> triDepthCacheArr;
 
             public void Execute(int index) {
                 int4 curTri = triIdxArr[index];
-                float4 fst = verticesArr[curTri.x + curTri.w];
-                float4 snd = verticesArr[curTri.y + curTri.w];
-                float4 trd = verticesArr[curTri.z + curTri.w];
+                float4 fst = vertexArr[curTri.x + curTri.w];
+                float4 snd = vertexArr[curTri.y + curTri.w];
+                float4 trd = vertexArr[curTri.z + curTri.w];
 
                 bool needCulling = CullingUtils.TriangleCulling(fst, snd, trd);
                 if (!needCulling) {
                     // ndc
-                    float4 ndcFst = fst / curTri.w;
-                    float4 ndcSnd = snd / curTri.w;
-                    float4 ndcTrd = trd / curTri.w;
+                    float4 ndcFst = fst / fst.w;
+                    float4 ndcSnd = snd / snd.w;
+                    float4 ndcTrd = trd / trd.w;
 
                     // screen
                     float4 screenFst = math.mul(fbMatrix, ndcFst);
                     float4 screenSnd = math.mul(fbMatrix, ndcSnd);
                     float4 screenTrd = math.mul(fbMatrix, ndcTrd);
 
+                    // vertex sorting & save
+                    float4 v0 = screenFst;
+                    float4 v1 = default;
+                    float4 v2 = default;
+
+                    if (screenSnd.y < v0.y) {
+                        v1 = v0;
+                        v0 = screenSnd;
+                    } else {
+                        v1 = screenSnd;
+                    }
+
+                    if (screenTrd.y < v0.y) {
+                        v2 = v0;
+                        v0 = screenTrd;
+                    } else {
+                        v2 = screenTrd;
+                    }
+
+                    if (v2.x > v1.x) {
+                        (v1, v2) = (v2, v1);
+                    }
+
+                    screenVertexArr[curTri.x + curTri.w] = v0;
+                    screenVertexArr[curTri.y + curTri.w] = v1;
+                    screenVertexArr[curTri.z + curTri.w] = v2;
+
+                    // mid vertex
+                    short midVertexIdx = v1.y < v2.y ? (short)1 : (short)2;
+                    screenTriMidIdxArr[index] = midVertexIdx;
+
+                    // depth
+                    float farthestDepth = v0.z;
+
+                    // TODO: 确认深度方向
+                    if (v1.z > farthestDepth) {
+                        farthestDepth = v1.z;
+                    }
+
+                    if (v2.z > farthestDepth) {
+                        farthestDepth = v2.z;
+                    }
+
+                    triDepthCacheArr[index] = farthestDepth;
                 }
             }
         }
 
         [BurstCompile]
         private struct OccludeeTriHandleJob : IJobParallelFor {
-            public NativeArray<int4> triIdxArr;
-            [ReadOnly] public NativeArray<float4> verticesArr;
+            [ReadOnly] public NativeArray<float4> vertexArr;
+            public NativeArray<float4> screenVertexArr;
+            public NativeArray<float> triDepthCacheArr;
 
             public void Execute(int index) {
                 int start = index * 8;
                 int end = (index + 1) * 8 - 1;
-                for (int i = start; i < end; i++) {
 
+                bool hasMin = false;
+                float4 min = default;
+                bool hasMax = false;
+                float4 max = default;
+
+                float minDepth = float.MaxValue;
+
+                for (int i = start; i < end; i++) {
+                    float4 vertex = vertexArr[i];
+                    float4 ndcResult = vertex / vertex.w;
+                    float4 screenResult = math.mul(fbMatrix, ndcResult);
+
+                    if (!hasMin) {
+                        min = screenResult;
+                        hasMin = true;
+                    }
+
+                    if (!hasMax) {
+                        max = screenResult;
+                        hasMax = true;
+                    }
+
+                    if (screenResult.x < min.x && screenResult.y < min.y) {
+                        min = screenResult;
+                    }
+
+                    if (screenResult.x > max.x && screenResult.y > max.y) {
+                        max = screenResult;
+                    }
+
+                    if (minDepth > screenResult.z) {
+                        minDepth = screenResult.z;
+                    }
                 }
+
+                screenVertexArr[index * 3] = min;
+                screenVertexArr[index * 3 + 1] = new float4(max.x, min.y, 0, 0);
+                screenVertexArr[index * 3 + 2] = max;
+
+                triDepthCacheArr[index] = minDepth;
             }
         }
 
