@@ -51,11 +51,11 @@ namespace ViE.SOC.Runtime.Utils {
         }
 
         public static bool TriangleCulling(float4 fst, float4 snd, float4 trd) {
-            for (int i = 0; i < 6; i++) {
-                var fstAbsW = math.abs(fst.w);
-                var sndAbsW = math.abs(snd.w);
-                var trdAbsW = math.abs(trd.w);
+            var fstAbsW = math.abs(fst.w);
+            var sndAbsW = math.abs(snd.w);
+            var trdAbsW = math.abs(trd.w);
 
+            for (int i = 0; i < 6; i++) {
                 // left
                 if (fst.x < -fstAbsW && snd.x < -sndAbsW && trd.x < -trdAbsW) {
                     return true;

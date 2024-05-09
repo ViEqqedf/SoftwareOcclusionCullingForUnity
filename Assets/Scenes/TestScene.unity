@@ -407,7 +407,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   mouseSensitivity: 5
-  movementSpeed: 200
+  movementSpeed: 50
   _height: 5
 --- !u!114 &1060505521
 MonoBehaviour:
@@ -537,7 +537,7 @@ Transform:
   m_GameObject: {fileID: 1601137653}
   serializedVersion: 2
   m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: 0, y: 0, z: -100}
+  m_LocalPosition: {x: 0, y: 0, z: -3}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children:

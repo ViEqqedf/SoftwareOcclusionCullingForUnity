@@ -80,7 +80,7 @@ namespace ViE.SOC.Runtime {
 
             occluderScreenVertexArr = new NativeArray<float4>(DEFAULT_CONTAINER_SIZE / 3, Allocator.Persistent);
             occluderScreenTriMidIdxArr = new NativeArray<short>(DEFAULT_CONTAINER_SIZE / 3, Allocator.Persistent);
-            occluderTriDepthCacheArr = new NativeArray<float>(FRAMEBUFFER_WIDTH * FRAMEBUFFER_HEIGHT, Allocator.Persistent);
+            occluderTriDepthCacheArr = new NativeArray<float>(DEFAULT_CONTAINER_SIZE / 3, Allocator.Persistent);
             occludeeScreenVertexArr = new NativeArray<float4>(DEFAULT_CONTAINER_SIZE, Allocator.Persistent);
             occludeeTriDepthCacheArr = new NativeArray<float>(DEFAULT_CONTAINER_SIZE / 3, Allocator.Persistent);
         }
@@ -252,12 +252,13 @@ namespace ViE.SOC.Runtime {
             var vMatrix = camera.worldToCameraMatrix;
             var pMatrix = camera.projectionMatrix;
 
-            var vpMatrix = vMatrix * pMatrix;
+            var vpMatrix = pMatrix * vMatrix;
 
             Profiler.BeginSample("[ViE] OccluderTransfer");
             #region Occluder Transfer
             int occluderVertexArrLength = 0;
             int mMatrixIdx = 0;
+            int triCount = 0;
 
             for (int i = 0, count = occluderList.Length; i < count; i++) {
                 var occluder = occluderList[i];
@@ -271,10 +272,12 @@ namespace ViE.SOC.Runtime {
                 Profiler.BeginSample("[ViE] OccluderTransfer-GetTriangles");
                 tempTriList.Clear();
                 mesh.GetTriangles(tempTriList, 0);
-                int triStartIdx = tempTriList.Count;
-                for (int j = 0; j < triStartIdx; j += 3) {
-                    cullingOccluderTriList.Add(new int4(tempTriList[j], tempTriList[j + 1], tempTriList[j + 2], triStartIdx));
+                int tempTriCount = tempTriList.Count;
+                for (int j = 0; j < tempTriCount; j += 3) {
+                    cullingOccluderTriList.Add(new int4(tempTriList[j], tempTriList[j + 1], tempTriList[j + 2], triCount));
                 }
+
+                triCount += tempTriCount;
                 Profiler.EndSample();
 
                 Profiler.BeginSample("[ViE] OccluderTransfer-InnerLoop");
@@ -308,6 +311,7 @@ namespace ViE.SOC.Runtime {
             Profiler.BeginSample("[ViE] OccludeeTransfer");
             #region Occludee Transfer
             int occludeeVertexArrLength = 0;
+            mMatrixIdx = 0;
 
             for (int i = 0, count = occludeeList.Length; i < count; i++) {
                 var occludee = occludeeList[i];
@@ -378,7 +382,7 @@ namespace ViE.SOC.Runtime {
             public void Execute(int index) {
                 CullingVertexInfo vertexInfo = vertices[index];
                 float3 vertex = vertexInfo.vertex;
-                var mvp = math.mul(modelMatrixList[vertexInfo.modelMatrixIndex], vpMatrix);
+                var mvp = math.mul(vpMatrix, modelMatrixList[vertexInfo.modelMatrixIndex]);
                 float4 mulResult = math.mul(mvp, new float4(vertex.x, vertex.y, vertex.z, 1));
                 clipVerticesResult[index] = mulResult;
             }
@@ -394,7 +398,8 @@ namespace ViE.SOC.Runtime {
             var depthArrPtr = occluderTriDepthCacheArr.GetUnsafePtr();
             UnsafeUtility.MemClear(depthArrPtr, FRAMEBUFFER_WIDTH * FRAMEBUFFER_HEIGHT * sizeof(int));
 
-            for (int i = 0, count = cullingOccluderTriList.Count; i < count; i++) {
+            int occluderTriCount = cullingOccluderTriList.Count;
+            for (int i = 0; i < occluderTriCount; i++) {
                 cullingOccluderTriNativeList.Add(cullingOccluderTriList[i]);
             }
 
@@ -404,7 +409,7 @@ namespace ViE.SOC.Runtime {
                 screenVertexArr = occluderScreenVertexArr,
                 screenTriMidIdxArr = occluderScreenTriMidIdxArr,
                 triDepthCacheArr = occluderTriDepthCacheArr,
-            }.Schedule(cullingOccluderTriNativeList.Length, 10, dependency);
+            }.Schedule(occluderTriCount, 10, dependency);
 
             dependency = new OccludeeTriHandleJob() {
                 vertexArr = cullingOccludeeProjVertexArr,
@@ -416,9 +421,13 @@ namespace ViE.SOC.Runtime {
         [BurstCompile]
         private struct OccluderTriHandleJob : IJobParallelFor {
             public NativeArray<int4> triIdxArr;
-            [ReadOnly] public NativeArray<float4> vertexArr;
+            [ReadOnly]
+            public NativeArray<float4> vertexArr;
+            [NativeDisableParallelForRestriction]
             public NativeArray<float4> screenVertexArr;
+            [NativeDisableParallelForRestriction]
             public NativeArray<short> screenTriMidIdxArr;
+            [NativeDisableParallelForRestriction]
             public NativeArray<float> triDepthCacheArr;
 
             public void Execute(int index) {
@@ -473,7 +482,7 @@ namespace ViE.SOC.Runtime {
                     // depth
                     float farthestDepth = v0.z;
 
-                    // TODO: 确认深度方向
+                    // TODO: Reverse-Z 后重新确认深度方向
                     if (v1.z > farthestDepth) {
                         farthestDepth = v1.z;
                     }
@@ -481,6 +490,10 @@ namespace ViE.SOC.Runtime {
                     if (v2.z > farthestDepth) {
                         farthestDepth = v2.z;
                     }
+
+                    // Debug.Log($"[ViE] 三角形{index} 的 v0({v0}) 深度为 {v0.z}");
+                    // Debug.Log($"[ViE] 三角形{index} 的 v1({v1}) 深度为 {v1.z}");
+                    // Debug.Log($"[ViE] 三角形{index} 的 v2({v2}) 深度为 {v2.z}");
 
                     triDepthCacheArr[index] = farthestDepth;
                 }
@@ -490,7 +503,9 @@ namespace ViE.SOC.Runtime {
         [BurstCompile]
         private struct OccludeeTriHandleJob : IJobParallelFor {
             [ReadOnly] public NativeArray<float4> vertexArr;
+            [NativeDisableParallelForRestriction]
             public NativeArray<float4> screenVertexArr;
+            [NativeDisableParallelForRestriction]
             public NativeArray<float> triDepthCacheArr;
 
             public void Execute(int index) {
