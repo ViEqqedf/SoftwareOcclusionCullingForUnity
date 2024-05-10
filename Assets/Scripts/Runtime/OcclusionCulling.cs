@@ -13,18 +13,22 @@ using ViE.SOC.Runtime.Utils;
 
 namespace ViE.SOC.Runtime {
     public class OcclusionCulling : MonoBehaviour {
+        public RenderTexture frameBufferRT;
+
         private const int DEFAULT_CONTAINER_SIZE = 1048576;
         private const float MIN_SCREEN_RADIUS_FOR_OCCLUDER = 0.02f;
-        private const int FRAMEBUFFER_WIDTH = 256;
+        private const int FRAMEBUFFER_BIN_WIDTH = 64;
+        private const int FRAMEBUFFER_WIDTH = FRAMEBUFFER_BIN_WIDTH * 4;
         private const int FRAMEBUFFER_HEIGHT = 128;
         private static readonly float4x4 fbMatrix = new float4x4(
-            new float4(FRAMEBUFFER_WIDTH * 0.5f, 0, 0, 0),
-            new float4(0, FRAMEBUFFER_WIDTH * 0.5f, 0, FRAMEBUFFER_HEIGHT * 0.5f),
+            new float4(FRAMEBUFFER_WIDTH * 0.5f, 0, 0, FRAMEBUFFER_WIDTH * 0.5f),
+            new float4(0, FRAMEBUFFER_HEIGHT * 0.5f, 0, FRAMEBUFFER_HEIGHT * 0.5f),
             new float4(0, 0, 1, 0),
             new float4(0, 0, 0, 1));
 
         private JobHandle dependency;
 
+        // Frustum Culling
         private Plane[] tempPlanes;
         private NativeArray<FrustumPlane> frustumPlaneArr;
         private List<MeshFilter> mfList;
@@ -33,6 +37,7 @@ namespace ViE.SOC.Runtime {
         private NativeList<CullingItem> occluderList;
         private NativeList<CullingItem> occludeeList;
 
+        // Geomerty Process
         private List<Vector3> cullingOccluderVertexList;
         private List<Vector3> cullingOccludeeVertexList;
         private CullingVertexInfo[] cullingOccluderVertexTempArr;
@@ -47,8 +52,19 @@ namespace ViE.SOC.Runtime {
         private NativeList<float4x4> occluderModelMatrixList;
         private NativeList<float4x4> occludeeModelMatrixList;
 
+        // Triangle Process
         private NativeArray<TriangleInfo> occluderScreenTriArr;
         private NativeArray<TriangleInfo> occludeeScreenTriArr;
+
+        // Rasterization
+        private NativeArray<ulong> frameBufferFstBin;
+        private NativeArray<ulong> frameBufferSndBin;
+        private NativeArray<ulong> frameBufferTrdBin;
+        private NativeArray<ulong> frameBufferFthBin;
+        private NativeArray<TriangleInfo> frameBufferFstTriBin;
+        private NativeArray<TriangleInfo> frameBufferSndTriBin;
+        private NativeArray<TriangleInfo> frameBufferTrdTriBin;
+        private NativeArray<TriangleInfo> frameBufferFthTriBin;
 
         private void Start() {
             JobsUtility.JobWorkerCount = 4;
@@ -77,6 +93,15 @@ namespace ViE.SOC.Runtime {
 
             occluderScreenTriArr = new NativeArray<TriangleInfo>(DEFAULT_CONTAINER_SIZE / 3, Allocator.Persistent);
             occludeeScreenTriArr = new NativeArray<TriangleInfo>(DEFAULT_CONTAINER_SIZE / 3, Allocator.Persistent);
+
+            frameBufferFstBin = new NativeArray<ulong>(128, Allocator.Persistent);
+            frameBufferSndBin = new NativeArray<ulong>(128, Allocator.Persistent);
+            frameBufferTrdBin = new NativeArray<ulong>(128, Allocator.Persistent);
+            frameBufferFthBin = new NativeArray<ulong>(128, Allocator.Persistent);
+            frameBufferFstTriBin = new NativeArray<TriangleInfo>(128, Allocator.Persistent);
+            frameBufferSndTriBin = new NativeArray<TriangleInfo>(128, Allocator.Persistent);
+            frameBufferTrdTriBin = new NativeArray<TriangleInfo>(128, Allocator.Persistent);
+            frameBufferFthTriBin = new NativeArray<TriangleInfo>(128, Allocator.Persistent);
         }
 
         private void OnDestroy() {
@@ -97,11 +122,21 @@ namespace ViE.SOC.Runtime {
             occluderScreenTriArr.Dispose();
             occludeeScreenTriArr.Dispose();
 
+            frameBufferFstBin.Dispose();
+            frameBufferSndBin.Dispose();
+            frameBufferTrdBin.Dispose();
+            frameBufferFthBin.Dispose();
+            frameBufferFstTriBin.Dispose();
+            frameBufferSndTriBin.Dispose();
+            frameBufferTrdTriBin.Dispose();
+            frameBufferFthTriBin.Dispose();
+
             JobsUtility.ResetJobWorkerCount();
         }
 
         private void Update() {
             dependency.Complete();
+            TestingDrawRT();
 
             Camera mainCamera = Camera.main;
 
@@ -113,8 +148,38 @@ namespace ViE.SOC.Runtime {
             CollectCullingItem(mainCamera);
             Profiler.EndSample();
             Profiler.BeginSample("[ViE] ProcessGeometry");
-            ProcessGeometry(mainCamera);
+            VerticesTransfer(mainCamera);
+            TriangleHandle(out int occluderTriCount, out int occludeeTriCount);
             Profiler.EndSample();
+            Profiler.BeginSample("[ViE] Rasterization");
+            Rasterization(occluderTriCount, occludeeTriCount);
+            Profiler.EndSample();
+        }
+
+        private void TestingDrawRT() {
+            Texture2D tex = new Texture2D(256, 128);
+            if (RenderTexture.active == null) {
+                RenderTexture.active = frameBufferRT;
+            }
+
+            for (int row = 0; row < FRAMEBUFFER_HEIGHT; row++) {
+                for (int col = 0; col < FRAMEBUFFER_WIDTH / 4; col++) {
+                    var fstCol = frameBufferFstBin[row] & ((ulong)1 << col);
+                    tex.SetPixel(col, row, fstCol != 0 ? Color.black : Color.white);
+
+                    var sndCol = frameBufferSndBin[row] & ((ulong)1 << col);
+                    tex.SetPixel(col + FRAMEBUFFER_WIDTH / 4, row, sndCol != 0 ? Color.black : Color.white);
+
+                    var trdCol = frameBufferTrdBin[row] & ((ulong)1 << col);
+                    tex.SetPixel(col + FRAMEBUFFER_WIDTH / 4 * 2, row, trdCol != 0 ? Color.black : Color.white);
+
+                    var fthCol = frameBufferFthBin[row] & ((ulong)1 << col);
+                    tex.SetPixel(col + FRAMEBUFFER_WIDTH / 4 * 3, row, fthCol != 0 ? Color.black : Color.white);
+                }
+            }
+
+            tex.Apply();
+            Graphics.Blit(tex, frameBufferRT);
         }
 
         private void CullingReset() {
@@ -219,11 +284,6 @@ namespace ViE.SOC.Runtime {
             }
         }
         #endregion
-
-        private void ProcessGeometry(Camera camera) {
-            VerticesTransfer(camera);
-            TriangleHandle();
-        }
 
         #region VerticeTransfer
         private void VerticesTransfer(Camera camera) {
@@ -377,10 +437,10 @@ namespace ViE.SOC.Runtime {
 
         #region TriangleHandle
 
-        private void TriangleHandle() {
+        private void TriangleHandle(out int occluderTriCount, out int occludeeTriCount) {
             cullingOccluderTriNativeList.Clear();
 
-            int occluderTriCount = cullingOccluderTriList.Count;
+            occluderTriCount = cullingOccluderTriList.Count;
             for (int i = 0; i < occluderTriCount; i++) {
                 cullingOccluderTriNativeList.Add(cullingOccluderTriList[i]);
             }
@@ -391,10 +451,18 @@ namespace ViE.SOC.Runtime {
                 screenTriArr = occluderScreenTriArr,
             }.Schedule(occluderTriCount, 10, dependency);
 
+            occludeeTriCount = occludeeList.Length;
             dependency = new OccludeeTriHandleJob() {
                 vertexArr = cullingOccludeeProjVertexArr,
-                screenTriArr = occluderScreenTriArr,
-            }.Schedule(occludeeList.Length, 10, dependency);
+                screenTriArr = occludeeScreenTriArr,
+            }.Schedule(occludeeTriCount, 10, dependency);
+
+            dependency = new ScreenTrisSortJob() {
+                occluderScreenTriArr = occluderScreenTriArr,
+                occluderTriCount = occluderTriCount,
+                occludeeScreenTriArr = occludeeScreenTriArr,
+                occludeeTriCount = occludeeTriCount,
+            }.Schedule(dependency);
         }
 
         [BurstCompile]
@@ -452,7 +520,7 @@ namespace ViE.SOC.Runtime {
                     // depth
                     float farthestDepth = v0.z;
 
-                    // TODO: Reverse-Z 后重新确认深度方向
+                    // TODO: Reverse-Z 后重新确认深度方向，当前深度正方向屏幕朝里
                     if (v1.z > farthestDepth) {
                         farthestDepth = v1.z;
                     }
@@ -469,9 +537,9 @@ namespace ViE.SOC.Runtime {
                         midVertexIdx = midVertexIdx,
                     };
 
-                    Debug.Log($"[ViE] 三角形{index} 的 v0({v0}) 深度为 {v0.z}");
-                    Debug.Log($"[ViE] 三角形{index} 的 v1({v1}) 深度为 {v1.z}");
-                    Debug.Log($"[ViE] 三角形{index} 的 v2({v2}) 深度为 {v2.z}");
+                    // Debug.Log($"[ViE] 三角形{index} 的 v0({v0}) 深度为 {v0.z}");
+                    // Debug.Log($"[ViE] 三角形{index} 的 v1({v1}) 深度为 {v1.z}");
+                    // Debug.Log($"[ViE] 三角形{index} 的 v2({v2}) 深度为 {v2.z}");
                 }
             }
         }
@@ -526,10 +594,188 @@ namespace ViE.SOC.Runtime {
                     v1 = new float4(max.x, min.y, 0, 0),
                     v2 = max,
                     depth = minDepth,
+                    midVertexIdx = Int16.MaxValue,
                 };
             }
         }
 
+        #endregion
+
+        #region Rasterization
+        private unsafe void Rasterization(int occluderTriCount, int occludeeTriCount) {
+            int size = 128 * sizeof(ulong);
+            UnsafeUtility.MemClear(frameBufferFstBin.GetUnsafePtr(), size);
+            UnsafeUtility.MemClear(frameBufferSndBin.GetUnsafePtr(), size);
+            UnsafeUtility.MemClear(frameBufferTrdBin.GetUnsafePtr(), size);
+            UnsafeUtility.MemClear(frameBufferFthBin.GetUnsafePtr(), size);
+
+            dependency = new OccluderRasterizationJob() {
+                occluderScreenTriArr = occluderScreenTriArr,
+                frameBufferFstBin = frameBufferFstBin,
+                frameBufferSndBin = frameBufferSndBin,
+                frameBufferTrdBin = frameBufferTrdBin,
+                frameBufferFthBin = frameBufferFthBin,
+            }.Schedule(occluderTriCount, 100, dependency);
+        }
+
+        private struct TriangleDepthSorter : IComparer<TriangleInfo> {
+            public bool orderLargest;
+
+            public TriangleDepthSorter(bool orderLargest) {
+                this.orderLargest = orderLargest;
+            }
+
+            public int Compare(TriangleInfo x, TriangleInfo y) {
+                int depthComparison = x.depth.CompareTo(y.depth);
+                if (orderLargest) {
+                    depthComparison = -depthComparison;
+                }
+
+                if (depthComparison != 0) {
+                    return depthComparison;
+                }
+
+                return x.midVertexIdx.CompareTo(y.midVertexIdx);
+            }
+        }
+
+        [BurstCompile]
+        private struct ScreenTrisSortJob : IJob {
+            public NativeArray<TriangleInfo> occluderScreenTriArr;
+            public int occluderTriCount;
+            public NativeArray<TriangleInfo> occludeeScreenTriArr;
+            public int occludeeTriCount;
+
+            public unsafe void Execute() {
+                NativeSortExtension.Sort((TriangleInfo*)occluderScreenTriArr.GetUnsafePtr(), occluderTriCount, new TriangleDepthSorter(false));
+                NativeSortExtension.Sort((TriangleInfo*)occludeeScreenTriArr.GetUnsafePtr(), occludeeTriCount, new TriangleDepthSorter(true));
+            }
+        }
+
+        [BurstCompile]
+        private struct OccluderRasterizationJob : IJobParallelFor {
+            public NativeArray<TriangleInfo> occluderScreenTriArr;
+            [NativeDisableContainerSafetyRestriction]
+            public NativeArray<ulong> frameBufferFstBin;
+            [NativeDisableContainerSafetyRestriction]
+            public NativeArray<ulong> frameBufferSndBin;
+            [NativeDisableContainerSafetyRestriction]
+            public NativeArray<ulong> frameBufferTrdBin;
+            [NativeDisableContainerSafetyRestriction]
+            public NativeArray<ulong> frameBufferFthBin;
+
+            public void Execute(int index) {
+                TriangleInfo tri = occluderScreenTriArr[index];
+                tri.GetPosedVertex(out float4 lowestVertex, out float4 midVertex, out float4 highestVertex);
+
+                float leftGradient = 0;
+                float rightGradient = 0;
+
+                if (midVertex.x < highestVertex.x) {
+                    leftGradient = CullingUtils.CalculateSlope(lowestVertex, midVertex);
+                    rightGradient = CullingUtils.CalculateSlope(lowestVertex, highestVertex);
+                } else {
+                    leftGradient = CullingUtils.CalculateSlope(lowestVertex, highestVertex);
+                    rightGradient = CullingUtils.CalculateSlope(lowestVertex, midVertex);
+                }
+
+                int beginRow = (int)math.round(lowestVertex.y) + FRAMEBUFFER_HEIGHT / 2;
+                int middleRow = (int)math.round(midVertex.y) + FRAMEBUFFER_HEIGHT / 2;
+                float xLeft = lowestVertex.x;
+                float xRight = lowestVertex.x;
+                for (int row = beginRow; row <= middleRow; row++, xLeft += leftGradient, xRight += rightGradient) {
+                    ulong fstFbMask = frameBufferFstBin[row];
+                    if (fstFbMask != ~0ul) {
+                        ulong rowMask = ComputeBinRowMask(0, xLeft, xRight);
+                        if (rowMask != 0ul) {
+                            frameBufferFstBin[row] = fstFbMask|rowMask;
+                        }
+                    }
+
+                    ulong sndFbMask = frameBufferSndBin[row];
+                    if (sndFbMask != ~0ul) {
+                        ulong rowMask = ComputeBinRowMask(FRAMEBUFFER_BIN_WIDTH, xLeft, xRight);
+                        if (rowMask != 0ul) {
+                            frameBufferSndBin[row] = sndFbMask|rowMask;
+                        }
+                    }
+
+                    ulong trdFbMask = frameBufferTrdBin[row];
+                    if (trdFbMask != ~0ul) {
+                        ulong rowMask = ComputeBinRowMask(FRAMEBUFFER_BIN_WIDTH * 2, xLeft, xRight);
+                        if (rowMask != 0ul) {
+                            frameBufferTrdBin[row] = trdFbMask|rowMask;
+                        }
+                    }
+
+                    ulong fthFbMask = frameBufferFthBin[row];
+                    if (fthFbMask != ~0ul) {
+                        ulong rowMask = ComputeBinRowMask(FRAMEBUFFER_BIN_WIDTH * 3, xLeft, xRight);
+                        if (rowMask != 0ul) {
+                            frameBufferFthBin[row] = fthFbMask|rowMask;
+                        }
+                    }
+                }
+
+                float xMiddleOtherSide = CullingUtils.GetXOnSameHorizontal(highestVertex, lowestVertex, midVertex.y);
+                if (xMiddleOtherSide < midVertex.x) {
+                    xLeft = xMiddleOtherSide;
+                    xRight = midVertex.x;
+                } else {
+                    xLeft = midVertex.x;
+                    xRight = xMiddleOtherSide;
+                }
+
+                leftGradient = CullingUtils.CalculateSlope(xLeft, highestVertex);
+                rightGradient = CullingUtils.CalculateSlope(xRight, highestVertex);
+
+                beginRow = (int)math.round(midVertex.y) + FRAMEBUFFER_HEIGHT / 2;
+                int maxRow = (int)math.round(math.min(FRAMEBUFFER_HEIGHT, highestVertex.y + FRAMEBUFFER_HEIGHT / 2));
+                for (int row = beginRow; row < maxRow; row++, xLeft += leftGradient, xRight += rightGradient) {
+                    ulong fstFbMask = frameBufferFstBin[row];
+                    if (fstFbMask != ~0ul) {
+                        ulong rowMask = ComputeBinRowMask(0, xLeft, xRight);
+                        if (rowMask != 0ul) {
+                            frameBufferFstBin[row] = fstFbMask|rowMask;
+                        }
+                    }
+
+                    ulong sndFbMask = frameBufferSndBin[row];
+                    if (sndFbMask != ~0ul) {
+                        ulong rowMask = ComputeBinRowMask(FRAMEBUFFER_BIN_WIDTH, xLeft, xRight);
+                        if (rowMask != 0ul) {
+                            frameBufferSndBin[row] = sndFbMask|rowMask;
+                        }
+                    }
+
+                    ulong trdFbMask = frameBufferTrdBin[row];
+                    if (trdFbMask != ~0ul) {
+                        ulong rowMask = ComputeBinRowMask(FRAMEBUFFER_BIN_WIDTH * 2, xLeft, xRight);
+                        if (rowMask != 0ul) {
+                            frameBufferTrdBin[row] = trdFbMask|rowMask;
+                        }
+                    }
+
+                    ulong fthFbMask = frameBufferFthBin[row];
+                    if (fthFbMask != ~0ul) {
+                        ulong rowMask = ComputeBinRowMask(FRAMEBUFFER_BIN_WIDTH * 3, xLeft, xRight);
+                        if (rowMask != 0ul) {
+                            frameBufferFthBin[row] = fthFbMask|rowMask;
+                        }
+                    }
+                }
+            }
+
+            private ulong ComputeBinRowMask(int binMinX, float fx0, float fx1) {
+                int x0 = (int)math.round(fx0) - binMinX;
+                int x1 = (int)math.round(fx1) - binMinX;
+                x0 = math.max(0, x0);
+                x1 = math.min(FRAMEBUFFER_BIN_WIDTH - 1, x1);
+                var bitNum = (x1 - x0) + 1;
+
+                return (bitNum == FRAMEBUFFER_BIN_WIDTH) ? ~0ul : ((1ul << bitNum) - 1) << x0;
+            }
+        }
         #endregion
     }
 }

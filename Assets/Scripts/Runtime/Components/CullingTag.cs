@@ -1,4 +1,5 @@
-﻿using Unity.Mathematics;
+﻿using System;
+using Unity.Mathematics;
 using UnityEngine;
 
 namespace ViE.SOC.Runtime.Components {
@@ -21,5 +22,19 @@ namespace ViE.SOC.Runtime.Components {
         public float4 v2;
         public float depth;
         public short midVertexIdx;
+
+        public void GetPosedVertex(out float4 lowestVertex, out float4 midVertex, out float4 highestVertex) {
+            lowestVertex = v0;
+
+            if (midVertexIdx == 1) {
+                midVertex = v1;
+                highestVertex = v2;
+            } else if (midVertexIdx == 2) {
+                midVertex = v2;
+                highestVertex = v1;
+            } else {
+                throw new Exception($"Wrong MidVertex {midVertexIdx}");
+            }
+        }
     }
 }

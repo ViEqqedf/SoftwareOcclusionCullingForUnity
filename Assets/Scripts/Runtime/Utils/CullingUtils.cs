@@ -89,5 +89,13 @@ namespace ViE.SOC.Runtime.Utils {
 
             return false;
         }
+
+        public static float CalculateSlope(float4 fst, float4 snd) {
+            return (fst.x - snd.x) / (fst.y - snd.y);
+        }
+
+        public static float GetXOnSameHorizontal(float4 fst, float4 snd, float targetY) {
+            return snd.x + (targetY - snd.y) / (fst.y - snd.y) * (fst.x - snd.x);
+        }
     }
 }
