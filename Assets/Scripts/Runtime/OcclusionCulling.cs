@@ -139,13 +139,13 @@ namespace ViE.SOC.Runtime {
 
         private void Update() {
             dependency.Complete();
+            Profiler.BeginSample("[ViE] DrawRT");
             TestingDrawRT();
+            Profiler.EndSample();
 
-            int occludeeCount = occludeeList.Length;
-            for (int i = 0; i < occludeeCount; i++) {
-                CullingItem item = occludeeList[i];
-                mfList[item.index].transform.GetComponent<MeshRenderer>().enabled = occludeeVisibilityResultArr[i];
-            }
+            Profiler.BeginSample("[ViE] CullingApply");
+            CullingApply();
+            Profiler.EndSample();
 
             Camera mainCamera = Camera.main;
 
@@ -192,6 +192,16 @@ namespace ViE.SOC.Runtime {
         }
 
         private void CullingReset() {
+        }
+
+        private void CullingApply() {
+            int occludeeCount = occludeeList.Length;
+            for (int i = 0; i < occludeeCount; i++) {
+                CullingItem item = occludeeList[i];
+                if (mfList[item.index] != null) {
+                    mfList[item.index].transform.GetComponent<MeshRenderer>().enabled = occludeeVisibilityResultArr[i];
+                }
+            }
         }
 
         #region FrustumCulling
