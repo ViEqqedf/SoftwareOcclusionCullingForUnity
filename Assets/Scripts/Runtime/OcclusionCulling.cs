@@ -668,22 +668,27 @@ namespace ViE.SOC.Runtime {
                 TriangleInfo tri = occluderScreenTriArr[index];
                 tri.GetPosedVertex(out float4 lowestVertex, out float4 midVertex, out float4 highestVertex);
 
+                // 另一条边与中点齐平的点
+                float xMiddleOtherSide = CullingUtils.GetXOnSameHorizontal(highestVertex, lowestVertex, midVertex.y);
+
                 float leftGradient = 0;
                 float rightGradient = 0;
+                float midGradient = CullingUtils.CalculateSlope(lowestVertex, midVertex);
+                float highestGradient = CullingUtils.CalculateSlope(lowestVertex, highestVertex);
 
-                if (midVertex.x < highestVertex.x) {
-                    leftGradient = CullingUtils.CalculateSlope(lowestVertex, midVertex);
-                    rightGradient = CullingUtils.CalculateSlope(lowestVertex, highestVertex);
+                if (xMiddleOtherSide > midVertex.x) {
+                    leftGradient = midGradient;
+                    rightGradient = highestGradient;
                 } else {
-                    leftGradient = CullingUtils.CalculateSlope(lowestVertex, highestVertex);
-                    rightGradient = CullingUtils.CalculateSlope(lowestVertex, midVertex);
+                    leftGradient = highestGradient;
+                    rightGradient = midGradient;
                 }
 
-                int beginRow = (int)math.round(lowestVertex.y) + FRAMEBUFFER_HEIGHT / 2;
-                int middleRow = (int)math.round(midVertex.y) + FRAMEBUFFER_HEIGHT / 2;
-                float xLeft = lowestVertex.x;
-                float xRight = lowestVertex.x;
-                for (int row = beginRow; row <= middleRow; row++, xLeft += leftGradient, xRight += rightGradient) {
+                int beginRow = math.max((int)math.round(lowestVertex.y) + FRAMEBUFFER_HEIGHT / 2, 0);
+                int middleRow = math.min((int)math.round(midVertex.y) + FRAMEBUFFER_HEIGHT / 2, FRAMEBUFFER_HEIGHT - 1);
+                float xLeft = lowestVertex.x + FRAMEBUFFER_WIDTH / 2;
+                float xRight = lowestVertex.x + FRAMEBUFFER_WIDTH / 2;
+                for (int row = beginRow; row < middleRow; row++, xLeft += leftGradient, xRight += rightGradient) {
                     ulong fstFbMask = frameBufferFstBin[row];
                     if (fstFbMask != ~0ul) {
                         ulong rowMask = ComputeBinRowMask(0, xLeft, xRight);
@@ -717,20 +722,28 @@ namespace ViE.SOC.Runtime {
                     }
                 }
 
-                float xMiddleOtherSide = CullingUtils.GetXOnSameHorizontal(highestVertex, lowestVertex, midVertex.y);
+                float4 leftVertex = default;
+                float4 rightVertex = default;
                 if (xMiddleOtherSide < midVertex.x) {
                     xLeft = xMiddleOtherSide;
                     xRight = midVertex.x;
+                    leftVertex = new float4(xMiddleOtherSide, midVertex.y, 0, 0);
+                    rightVertex = midVertex;
                 } else {
                     xLeft = midVertex.x;
                     xRight = xMiddleOtherSide;
+                    leftVertex = midVertex;
+                    rightVertex = new float4(xMiddleOtherSide, midVertex.y, 0, 0);
                 }
 
-                leftGradient = CullingUtils.CalculateSlope(xLeft, highestVertex);
-                rightGradient = CullingUtils.CalculateSlope(xRight, highestVertex);
+                leftGradient = CullingUtils.CalculateSlope(leftVertex, highestVertex);
+                rightGradient = CullingUtils.CalculateSlope(rightVertex, highestVertex);
 
-                beginRow = (int)math.round(midVertex.y) + FRAMEBUFFER_HEIGHT / 2;
-                int maxRow = (int)math.round(math.min(FRAMEBUFFER_HEIGHT, highestVertex.y + FRAMEBUFFER_HEIGHT / 2));
+                xLeft += FRAMEBUFFER_WIDTH / 2;
+                xRight += FRAMEBUFFER_WIDTH / 2;
+
+                beginRow = math.max((int)math.round(midVertex.y) + FRAMEBUFFER_HEIGHT / 2, 0);
+                int maxRow = math.min((int)math.round(math.min(FRAMEBUFFER_HEIGHT, highestVertex.y + FRAMEBUFFER_HEIGHT / 2)), FRAMEBUFFER_HEIGHT - 1);
                 for (int row = beginRow; row < maxRow; row++, xLeft += leftGradient, xRight += rightGradient) {
                     ulong fstFbMask = frameBufferFstBin[row];
                     if (fstFbMask != ~0ul) {
@@ -773,7 +786,12 @@ namespace ViE.SOC.Runtime {
                 x1 = math.min(FRAMEBUFFER_BIN_WIDTH - 1, x1);
                 var bitNum = (x1 - x0) + 1;
 
-                return (bitNum == FRAMEBUFFER_BIN_WIDTH) ? ~0ul : ((1ul << bitNum) - 1) << x0;
+                if (bitNum > 0) {
+                    var result = (bitNum == FRAMEBUFFER_BIN_WIDTH) ? ~0ul : ((1ul << bitNum) - 1) << x0;
+                    return result;
+                } else {
+                    return 0ul;
+                }
             }
         }
         #endregion

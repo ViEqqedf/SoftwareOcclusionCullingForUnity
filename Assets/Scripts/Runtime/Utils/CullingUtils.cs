@@ -95,7 +95,7 @@ namespace ViE.SOC.Runtime.Utils {
         }
 
         public static float GetXOnSameHorizontal(float4 fst, float4 snd, float targetY) {
-            return snd.x + (targetY - snd.y) / (fst.y - snd.y) * (fst.x - snd.x);
+            return fst.x + (targetY - fst.y) / (snd.y - fst.y) * (snd.x - fst.x);
         }
     }
 }
