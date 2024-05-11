@@ -53,7 +53,7 @@ namespace ViE.SOC.Runtime {
         private NativeList<float4x4> occludeeModelMatrixList;
 
         // Triangle Process
-        private NativeArray<TriangleInfo> occluderScreenTriArr;
+        private NativeList<TriangleInfo> occluderScreenTriList;
         private NativeArray<TriangleInfo> occludeeScreenTriArr;
 
         // Rasterization
@@ -91,7 +91,7 @@ namespace ViE.SOC.Runtime {
             occluderModelMatrixList = new NativeList<float4x4>(Allocator.Persistent);
             occludeeModelMatrixList = new NativeList<float4x4>(Allocator.Persistent);
 
-            occluderScreenTriArr = new NativeArray<TriangleInfo>(DEFAULT_CONTAINER_SIZE / 3, Allocator.Persistent);
+            occluderScreenTriList = new NativeList<TriangleInfo>(DEFAULT_CONTAINER_SIZE / 3, Allocator.Persistent);
             occludeeScreenTriArr = new NativeArray<TriangleInfo>(DEFAULT_CONTAINER_SIZE / 3, Allocator.Persistent);
 
             frameBufferFstBin = new NativeArray<ulong>(128, Allocator.Persistent);
@@ -119,7 +119,7 @@ namespace ViE.SOC.Runtime {
             occluderModelMatrixList.Dispose();
             occludeeModelMatrixList.Dispose();
 
-            occluderScreenTriArr.Dispose();
+            occluderScreenTriList.Dispose();
             occludeeScreenTriArr.Dispose();
 
             frameBufferFstBin.Dispose();
@@ -439,6 +439,7 @@ namespace ViE.SOC.Runtime {
 
         private void TriangleHandle(out int occluderTriCount, out int occludeeTriCount) {
             cullingOccluderTriNativeList.Clear();
+            occluderScreenTriList.Clear();
 
             occluderTriCount = cullingOccluderTriList.Count;
             for (int i = 0; i < occluderTriCount; i++) {
@@ -448,7 +449,7 @@ namespace ViE.SOC.Runtime {
             dependency = new OccluderTriHandleJob() {
                 triIdxArr = cullingOccluderTriNativeList.AsArray(),
                 vertexArr = cullingOccluderProjVertexArr,
-                screenTriArr = occluderScreenTriArr,
+                screenTriList = occluderScreenTriList.AsParallelWriter(),
             }.Schedule(occluderTriCount, 10, dependency);
 
             occludeeTriCount = occludeeList.Length;
@@ -458,8 +459,7 @@ namespace ViE.SOC.Runtime {
             }.Schedule(occludeeTriCount, 10, dependency);
 
             dependency = new ScreenTrisSortJob() {
-                occluderScreenTriArr = occluderScreenTriArr,
-                occluderTriCount = occluderTriCount,
+                occluderScreenTriList = occluderScreenTriList,
                 occludeeScreenTriArr = occludeeScreenTriArr,
                 occludeeTriCount = occludeeTriCount,
             }.Schedule(dependency);
@@ -471,7 +471,7 @@ namespace ViE.SOC.Runtime {
             [ReadOnly]
             public NativeArray<float4> vertexArr;
             [NativeDisableParallelForRestriction]
-            public NativeArray<TriangleInfo> screenTriArr;
+            public NativeList<TriangleInfo>.ParallelWriter screenTriList;
 
             public void Execute(int index) {
                 int4 curTri = triIdxArr[index];
@@ -529,13 +529,13 @@ namespace ViE.SOC.Runtime {
                         farthestDepth = v2.z;
                     }
 
-                    screenTriArr[index] = new TriangleInfo() {
+                    screenTriList.AddNoResize(new TriangleInfo() {
                         v0 = v0,
                         v1 = v1,
                         v2 = v2,
                         depth = farthestDepth,
                         midVertexIdx = midVertexIdx,
-                    };
+                    });
 
                     // Debug.Log($"[ViE] 三角形{index} 的 v0({v0}) 深度为 {v0.z}");
                     // Debug.Log($"[ViE] 三角形{index} 的 v1({v1}) 深度为 {v1.z}");
@@ -610,7 +610,8 @@ namespace ViE.SOC.Runtime {
             UnsafeUtility.MemClear(frameBufferFthBin.GetUnsafePtr(), size);
 
             dependency = new OccluderRasterizationJob() {
-                occluderScreenTriArr = occluderScreenTriArr,
+                screenTriCount = -1,
+                occluderScreenTriList = occluderScreenTriList,
                 frameBufferFstBin = frameBufferFstBin,
                 frameBufferSndBin = frameBufferSndBin,
                 frameBufferTrdBin = frameBufferTrdBin,
@@ -641,20 +642,22 @@ namespace ViE.SOC.Runtime {
 
         [BurstCompile]
         private struct ScreenTrisSortJob : IJob {
-            public NativeArray<TriangleInfo> occluderScreenTriArr;
-            public int occluderTriCount;
+            public NativeList<TriangleInfo> occluderScreenTriList;
             public NativeArray<TriangleInfo> occludeeScreenTriArr;
             public int occludeeTriCount;
 
             public unsafe void Execute() {
-                NativeSortExtension.Sort((TriangleInfo*)occluderScreenTriArr.GetUnsafePtr(), occluderTriCount, new TriangleDepthSorter(false));
+                NativeSortExtension.Sort((TriangleInfo*)occluderScreenTriList.GetUnsafePtr(), occluderScreenTriList.Length, new TriangleDepthSorter(false));
                 NativeSortExtension.Sort((TriangleInfo*)occludeeScreenTriArr.GetUnsafePtr(), occludeeTriCount, new TriangleDepthSorter(true));
             }
         }
 
         [BurstCompile]
         private struct OccluderRasterizationJob : IJobParallelFor {
-            public NativeArray<TriangleInfo> occluderScreenTriArr;
+            public int screenTriCount;
+
+            [ReadOnly]
+            public NativeList<TriangleInfo> occluderScreenTriList;
             [NativeDisableContainerSafetyRestriction]
             public NativeArray<ulong> frameBufferFstBin;
             [NativeDisableContainerSafetyRestriction]
@@ -665,7 +668,15 @@ namespace ViE.SOC.Runtime {
             public NativeArray<ulong> frameBufferFthBin;
 
             public void Execute(int index) {
-                TriangleInfo tri = occluderScreenTriArr[index];
+                if (screenTriCount == -1) {
+                    screenTriCount = occluderScreenTriList.Length;
+                }
+
+                if (index >= screenTriCount) {
+                    return;
+                }
+
+                TriangleInfo tri = occluderScreenTriList[index];
                 tri.GetPosedVertex(out float4 lowestVertex, out float4 midVertex, out float4 highestVertex);
 
                 // 另一条边与中点齐平的点
@@ -768,11 +779,6 @@ namespace ViE.SOC.Runtime {
 
                 if (bitNum > 0) {
                     var result = (bitNum == FRAMEBUFFER_BIN_WIDTH) ? ~0ul : ((1ul << bitNum) - 1) << x0;
-
-                    if (result != 0ul) {
-                        Debug.Log($"[ViE] ?");
-                    }
-
                     return result;
                 } else {
                     return 0ul;
