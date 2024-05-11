@@ -689,37 +689,7 @@ namespace ViE.SOC.Runtime {
                 float xLeft = lowestVertex.x + FRAMEBUFFER_WIDTH / 2;
                 float xRight = lowestVertex.x + FRAMEBUFFER_WIDTH / 2;
                 for (int row = beginRow; row < middleRow; row++, xLeft += leftGradient, xRight += rightGradient) {
-                    ulong fstFbMask = frameBufferFstBin[row];
-                    if (fstFbMask != ~0ul) {
-                        ulong rowMask = ComputeBinRowMask(0, xLeft, xRight);
-                        if (rowMask != 0ul) {
-                            frameBufferFstBin[row] = fstFbMask|rowMask;
-                        }
-                    }
-
-                    ulong sndFbMask = frameBufferSndBin[row];
-                    if (sndFbMask != ~0ul) {
-                        ulong rowMask = ComputeBinRowMask(FRAMEBUFFER_BIN_WIDTH, xLeft, xRight);
-                        if (rowMask != 0ul) {
-                            frameBufferSndBin[row] = sndFbMask|rowMask;
-                        }
-                    }
-
-                    ulong trdFbMask = frameBufferTrdBin[row];
-                    if (trdFbMask != ~0ul) {
-                        ulong rowMask = ComputeBinRowMask(FRAMEBUFFER_BIN_WIDTH * 2, xLeft, xRight);
-                        if (rowMask != 0ul) {
-                            frameBufferTrdBin[row] = trdFbMask|rowMask;
-                        }
-                    }
-
-                    ulong fthFbMask = frameBufferFthBin[row];
-                    if (fthFbMask != ~0ul) {
-                        ulong rowMask = ComputeBinRowMask(FRAMEBUFFER_BIN_WIDTH * 3, xLeft, xRight);
-                        if (rowMask != 0ul) {
-                            frameBufferFthBin[row] = fthFbMask|rowMask;
-                        }
-                    }
+                    SetBinRowMask(row, xLeft, xRight);
                 }
 
                 float4 leftVertex = default;
@@ -738,43 +708,45 @@ namespace ViE.SOC.Runtime {
 
                 leftGradient = CullingUtils.CalculateSlope(leftVertex, highestVertex);
                 rightGradient = CullingUtils.CalculateSlope(rightVertex, highestVertex);
-
                 xLeft += FRAMEBUFFER_WIDTH / 2;
                 xRight += FRAMEBUFFER_WIDTH / 2;
-
                 beginRow = math.max((int)math.round(midVertex.y) + FRAMEBUFFER_HEIGHT / 2, 0);
                 int maxRow = math.min((int)math.round(math.min(FRAMEBUFFER_HEIGHT, highestVertex.y + FRAMEBUFFER_HEIGHT / 2)), FRAMEBUFFER_HEIGHT - 1);
                 for (int row = beginRow; row < maxRow; row++, xLeft += leftGradient, xRight += rightGradient) {
-                    ulong fstFbMask = frameBufferFstBin[row];
-                    if (fstFbMask != ~0ul) {
-                        ulong rowMask = ComputeBinRowMask(0, xLeft, xRight);
-                        if (rowMask != 0ul) {
-                            frameBufferFstBin[row] = fstFbMask|rowMask;
-                        }
-                    }
+                    SetBinRowMask(row, xLeft, xRight);
+                }
+            }
 
-                    ulong sndFbMask = frameBufferSndBin[row];
-                    if (sndFbMask != ~0ul) {
-                        ulong rowMask = ComputeBinRowMask(FRAMEBUFFER_BIN_WIDTH, xLeft, xRight);
-                        if (rowMask != 0ul) {
-                            frameBufferSndBin[row] = sndFbMask|rowMask;
-                        }
+            private void SetBinRowMask(int row, float xLeft, float xRight) {
+                ulong fstFbMask = frameBufferFstBin[row];
+                if (fstFbMask != ~0ul) {
+                    ulong rowMask = ComputeBinRowMask(0, xLeft, xRight);
+                    if (rowMask != 0ul) {
+                        frameBufferFstBin[row] = fstFbMask|rowMask;
                     }
+                }
 
-                    ulong trdFbMask = frameBufferTrdBin[row];
-                    if (trdFbMask != ~0ul) {
-                        ulong rowMask = ComputeBinRowMask(FRAMEBUFFER_BIN_WIDTH * 2, xLeft, xRight);
-                        if (rowMask != 0ul) {
-                            frameBufferTrdBin[row] = trdFbMask|rowMask;
-                        }
+                ulong sndFbMask = frameBufferSndBin[row];
+                if (sndFbMask != ~0ul) {
+                    ulong rowMask = ComputeBinRowMask(FRAMEBUFFER_BIN_WIDTH, xLeft, xRight);
+                    if (rowMask != 0ul) {
+                        frameBufferSndBin[row] = sndFbMask|rowMask;
                     }
+                }
 
-                    ulong fthFbMask = frameBufferFthBin[row];
-                    if (fthFbMask != ~0ul) {
-                        ulong rowMask = ComputeBinRowMask(FRAMEBUFFER_BIN_WIDTH * 3, xLeft, xRight);
-                        if (rowMask != 0ul) {
-                            frameBufferFthBin[row] = fthFbMask|rowMask;
-                        }
+                ulong trdFbMask = frameBufferTrdBin[row];
+                if (trdFbMask != ~0ul) {
+                    ulong rowMask = ComputeBinRowMask(FRAMEBUFFER_BIN_WIDTH * 2, xLeft, xRight);
+                    if (rowMask != 0ul) {
+                        frameBufferTrdBin[row] = trdFbMask|rowMask;
+                    }
+                }
+
+                ulong fthFbMask = frameBufferFthBin[row];
+                if (fthFbMask != ~0ul) {
+                    ulong rowMask = ComputeBinRowMask(FRAMEBUFFER_BIN_WIDTH * 3, xLeft, xRight);
+                    if (rowMask != 0ul) {
+                        frameBufferFthBin[row] = fthFbMask|rowMask;
                     }
                 }
             }
