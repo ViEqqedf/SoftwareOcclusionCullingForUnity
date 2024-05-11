@@ -684,10 +684,18 @@ namespace ViE.SOC.Runtime {
                     rightGradient = midGradient;
                 }
 
-                int beginRow = math.max((int)math.round(lowestVertex.y) + FRAMEBUFFER_HEIGHT / 2, 0);
+                int lowestRow = (int)math.round(lowestVertex.y) + FRAMEBUFFER_HEIGHT / 2;
+                int beginRowDiff = -lowestRow;
+                int beginRow = math.max(lowestRow, 0);
                 int middleRow = math.min((int)math.round(midVertex.y) + FRAMEBUFFER_HEIGHT / 2, FRAMEBUFFER_HEIGHT - 1);
                 float xLeft = lowestVertex.x + FRAMEBUFFER_WIDTH / 2;
                 float xRight = lowestVertex.x + FRAMEBUFFER_WIDTH / 2;
+
+                if (beginRowDiff > 0) {
+                    xLeft += beginRowDiff * leftGradient;
+                    xRight += beginRowDiff * rightGradient;
+                }
+
                 for (int row = beginRow; row < middleRow; row++, xLeft += leftGradient, xRight += rightGradient) {
                     SetBinRowMask(row, xLeft, xRight);
                 }
@@ -760,6 +768,11 @@ namespace ViE.SOC.Runtime {
 
                 if (bitNum > 0) {
                     var result = (bitNum == FRAMEBUFFER_BIN_WIDTH) ? ~0ul : ((1ul << bitNum) - 1) << x0;
+
+                    if (result != 0ul) {
+                        Debug.Log($"[ViE] ?");
+                    }
+
                     return result;
                 } else {
                     return 0ul;
