@@ -9,6 +9,7 @@ namespace ViE.SOC.Runtime.Components {
         public float screenSize;
         public bool hasTransparentMat;
         public int index;
+        public bool isOccluder;
     }
 
     public struct CullingVertexInfo {
@@ -25,6 +26,8 @@ namespace ViE.SOC.Runtime.Components {
 
         public void GetPosedVertex(out float4 lowestVertex, out float4 midVertex, out float4 highestVertex) {
             lowestVertex = v0;
+            midVertex = v1;
+            highestVertex = v2;
 
             if (midVertexIdx == 1) {
                 midVertex = v1;
@@ -32,7 +35,7 @@ namespace ViE.SOC.Runtime.Components {
             } else if (midVertexIdx == 2) {
                 midVertex = v2;
                 highestVertex = v1;
-            } else {
+            } else if(midVertexIdx == 0) {
                 throw new Exception($"Wrong MidVertex {midVertexIdx}");
             }
         }

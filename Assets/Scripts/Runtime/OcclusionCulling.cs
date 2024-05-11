@@ -65,6 +65,7 @@ namespace ViE.SOC.Runtime {
         private NativeArray<TriangleInfo> frameBufferSndTriBin;
         private NativeArray<TriangleInfo> frameBufferTrdTriBin;
         private NativeArray<TriangleInfo> frameBufferFthTriBin;
+        public NativeArray<bool> occludeeVisibilityResultArr;
 
         private void Start() {
             JobsUtility.JobWorkerCount = 4;
@@ -102,6 +103,7 @@ namespace ViE.SOC.Runtime {
             frameBufferSndTriBin = new NativeArray<TriangleInfo>(128, Allocator.Persistent);
             frameBufferTrdTriBin = new NativeArray<TriangleInfo>(128, Allocator.Persistent);
             frameBufferFthTriBin = new NativeArray<TriangleInfo>(128, Allocator.Persistent);
+            occludeeVisibilityResultArr = new NativeArray<bool>(DEFAULT_CONTAINER_SIZE / 3, Allocator.Persistent);
         }
 
         private void OnDestroy() {
@@ -130,6 +132,7 @@ namespace ViE.SOC.Runtime {
             frameBufferSndTriBin.Dispose();
             frameBufferTrdTriBin.Dispose();
             frameBufferFthTriBin.Dispose();
+            occludeeVisibilityResultArr.Dispose();
 
             JobsUtility.ResetJobWorkerCount();
         }
@@ -137,6 +140,12 @@ namespace ViE.SOC.Runtime {
         private void Update() {
             dependency.Complete();
             TestingDrawRT();
+
+            int occludeeCount = occludeeList.Length;
+            for (int i = 0; i < occludeeCount; i++) {
+                CullingItem item = occludeeList[i];
+                mfList[item.index].transform.GetComponent<MeshRenderer>().enabled = occludeeVisibilityResultArr[i];
+            }
 
             Camera mainCamera = Camera.main;
 
@@ -224,6 +233,7 @@ namespace ViE.SOC.Runtime {
                         boundRadius = radius,
                         hasTransparentMat = hasTransparentMat,
                         index = cullingMFListLength++,
+                        isOccluder = mr.transform.tag.Contains("ViEOccluder"),
                     });
                 }
 
@@ -254,19 +264,15 @@ namespace ViE.SOC.Runtime {
                     screenSize = itemScreenSize,
                     hasTransparentMat = item.hasTransparentMat,
                     index = item.index,
+                    isOccluder = item.isOccluder,
                 };
                 item = cullingItemList[i];
 
-                if (!item.hasTransparentMat && itemScreenSize > MIN_SCREEN_RADIUS_FOR_OCCLUDER) {
+                if (item.isOccluder && !item.hasTransparentMat && itemScreenSize > MIN_SCREEN_RADIUS_FOR_OCCLUDER) {
                     occluderList.Add(item);
-                    // mrList[item.index].enabled = true;
-                    // Debug.Log($"[ViE] 屏占比达标");
                 } else {
-                    // mrList[item.index].enabled = false;
-                    // Debug.Log($"[ViE] 屏占比不达标");
+                    occludeeList.Add(item);
                 }
-
-                occludeeList.Add(item);
             }
 
             OccluderSorter occluderSorter = new OccluderSorter();
@@ -599,10 +605,24 @@ namespace ViE.SOC.Runtime {
             }
         }
 
+        [BurstCompile]
+        private struct ScreenTrisSortJob : IJob {
+            public NativeList<TriangleInfo> occluderScreenTriList;
+            public NativeArray<TriangleInfo> occludeeScreenTriArr;
+            public int occludeeTriCount;
+
+            public unsafe void Execute() {
+                NativeSortExtension.Sort((TriangleInfo*)occluderScreenTriList.GetUnsafePtr(), occluderScreenTriList.Length, new TriangleDepthSorter(false));
+                NativeSortExtension.Sort((TriangleInfo*)occludeeScreenTriArr.GetUnsafePtr(), occludeeTriCount, new TriangleDepthSorter(true));
+            }
+        }
+
         #endregion
 
         #region Rasterization
         private unsafe void Rasterization(int occluderTriCount, int occludeeTriCount) {
+            UnsafeUtility.MemClear(occludeeVisibilityResultArr.GetUnsafePtr(), DEFAULT_CONTAINER_SIZE / 3 * sizeof(bool));
+
             int size = 128 * sizeof(ulong);
             UnsafeUtility.MemClear(frameBufferFstBin.GetUnsafePtr(), size);
             UnsafeUtility.MemClear(frameBufferSndBin.GetUnsafePtr(), size);
@@ -612,11 +632,20 @@ namespace ViE.SOC.Runtime {
             dependency = new OccluderRasterizationJob() {
                 screenTriCount = -1,
                 occluderScreenTriList = occluderScreenTriList,
-                frameBufferFstBin = frameBufferFstBin,
-                frameBufferSndBin = frameBufferSndBin,
-                frameBufferTrdBin = frameBufferTrdBin,
-                frameBufferFthBin = frameBufferFthBin,
+                fbBin0 = frameBufferFstBin,
+                fbBin1 = frameBufferSndBin,
+                fbBin2 = frameBufferTrdBin,
+                fbBin3 = frameBufferFthBin,
             }.Schedule(occluderTriCount, 100, dependency);
+
+            dependency = new OccludeeDepthTestJob() {
+                occludeeScreenTriArr = occludeeScreenTriArr,
+                fbBin0 = frameBufferFstBin,
+                fbBin1 = frameBufferSndBin,
+                fbBin2 = frameBufferTrdBin,
+                fbBin3 = frameBufferFthBin,
+                occludeeVisibilityResultArr = occludeeVisibilityResultArr,
+            }.Schedule(occludeeTriCount, 100, dependency);
         }
 
         private struct TriangleDepthSorter : IComparer<TriangleInfo> {
@@ -641,31 +670,19 @@ namespace ViE.SOC.Runtime {
         }
 
         [BurstCompile]
-        private struct ScreenTrisSortJob : IJob {
-            public NativeList<TriangleInfo> occluderScreenTriList;
-            public NativeArray<TriangleInfo> occludeeScreenTriArr;
-            public int occludeeTriCount;
-
-            public unsafe void Execute() {
-                NativeSortExtension.Sort((TriangleInfo*)occluderScreenTriList.GetUnsafePtr(), occluderScreenTriList.Length, new TriangleDepthSorter(false));
-                NativeSortExtension.Sort((TriangleInfo*)occludeeScreenTriArr.GetUnsafePtr(), occludeeTriCount, new TriangleDepthSorter(true));
-            }
-        }
-
-        [BurstCompile]
         private struct OccluderRasterizationJob : IJobParallelFor {
             public int screenTriCount;
 
             [ReadOnly]
             public NativeList<TriangleInfo> occluderScreenTriList;
             [NativeDisableContainerSafetyRestriction]
-            public NativeArray<ulong> frameBufferFstBin;
+            public NativeArray<ulong> fbBin0;
             [NativeDisableContainerSafetyRestriction]
-            public NativeArray<ulong> frameBufferSndBin;
+            public NativeArray<ulong> fbBin1;
             [NativeDisableContainerSafetyRestriction]
-            public NativeArray<ulong> frameBufferTrdBin;
+            public NativeArray<ulong> fbBin2;
             [NativeDisableContainerSafetyRestriction]
-            public NativeArray<ulong> frameBufferFthBin;
+            public NativeArray<ulong> fbBin3;
 
             public void Execute(int index) {
                 if (screenTriCount == -1) {
@@ -737,35 +754,35 @@ namespace ViE.SOC.Runtime {
             }
 
             private void SetBinRowMask(int row, float xLeft, float xRight) {
-                ulong fstFbMask = frameBufferFstBin[row];
+                ulong fstFbMask = fbBin0[row];
                 if (fstFbMask != ~0ul) {
                     ulong rowMask = ComputeBinRowMask(0, xLeft, xRight);
                     if (rowMask != 0ul) {
-                        frameBufferFstBin[row] = fstFbMask|rowMask;
+                        fbBin0[row] = fstFbMask|rowMask;
                     }
                 }
 
-                ulong sndFbMask = frameBufferSndBin[row];
+                ulong sndFbMask = fbBin1[row];
                 if (sndFbMask != ~0ul) {
                     ulong rowMask = ComputeBinRowMask(FRAMEBUFFER_BIN_WIDTH, xLeft, xRight);
                     if (rowMask != 0ul) {
-                        frameBufferSndBin[row] = sndFbMask|rowMask;
+                        fbBin1[row] = sndFbMask|rowMask;
                     }
                 }
 
-                ulong trdFbMask = frameBufferTrdBin[row];
+                ulong trdFbMask = fbBin2[row];
                 if (trdFbMask != ~0ul) {
                     ulong rowMask = ComputeBinRowMask(FRAMEBUFFER_BIN_WIDTH * 2, xLeft, xRight);
                     if (rowMask != 0ul) {
-                        frameBufferTrdBin[row] = trdFbMask|rowMask;
+                        fbBin2[row] = trdFbMask|rowMask;
                     }
                 }
 
-                ulong fthFbMask = frameBufferFthBin[row];
+                ulong fthFbMask = fbBin3[row];
                 if (fthFbMask != ~0ul) {
                     ulong rowMask = ComputeBinRowMask(FRAMEBUFFER_BIN_WIDTH * 3, xLeft, xRight);
                     if (rowMask != 0ul) {
-                        frameBufferFthBin[row] = fthFbMask|rowMask;
+                        fbBin3[row] = fthFbMask|rowMask;
                     }
                 }
             }
@@ -783,6 +800,54 @@ namespace ViE.SOC.Runtime {
                 } else {
                     return 0ul;
                 }
+            }
+        }
+
+        private struct OccludeeDepthTestJob : IJobParallelFor {
+            public NativeArray<TriangleInfo> occludeeScreenTriArr;
+            public NativeArray<bool> occludeeVisibilityResultArr;
+            [NativeDisableContainerSafetyRestriction]
+            public NativeArray<ulong> fbBin0;
+            [NativeDisableContainerSafetyRestriction]
+            public NativeArray<ulong> fbBin1;
+            [NativeDisableContainerSafetyRestriction]
+            public NativeArray<ulong> fbBin2;
+            [NativeDisableContainerSafetyRestriction]
+            public NativeArray<ulong> fbBin3;
+
+            public void Execute(int index) {
+                TriangleInfo tri = occludeeScreenTriArr[index];
+                bool result = CheckVisibility(fbBin0, 0, tri) ||
+                              CheckVisibility(fbBin1, FRAMEBUFFER_BIN_WIDTH, tri) ||
+                              CheckVisibility(fbBin2, FRAMEBUFFER_BIN_WIDTH * 2, tri) ||
+                              CheckVisibility(fbBin3, FRAMEBUFFER_BIN_WIDTH * 3, tri);
+                occludeeVisibilityResultArr[index] |= result;
+            }
+
+            private bool CheckVisibility(NativeArray<ulong> frameBufBin, int binMinX, TriangleInfo triangle) {
+                triangle.GetPosedVertex(out float4 lowestVertex, out float4 midVertex, out float4 highestVertex);
+                lowestVertex += new float4(FRAMEBUFFER_WIDTH / 2, FRAMEBUFFER_HEIGHT / 2, 0, 0);
+                midVertex += new float4(FRAMEBUFFER_WIDTH / 2, FRAMEBUFFER_HEIGHT / 2, 0, 0);
+                highestVertex += new float4(FRAMEBUFFER_WIDTH / 2, FRAMEBUFFER_HEIGHT / 2, 0, 0);
+
+                int yMin = (int)math.round(math.max(0, lowestVertex.y));
+                int yMax = (int)math.round(math.min(FRAMEBUFFER_HEIGHT, highestVertex.y));
+
+                int x0 = (int)math.round(math.max(lowestVertex.x - binMinX, 0));
+                int x1 = (int)math.round(math.min(midVertex.x - binMinX, FRAMEBUFFER_BIN_WIDTH - 1));
+                if (x0 > x1) {
+                    return false;
+                }
+
+                int bitNum = (x1 - x0) + 1;
+                ulong rowMask = (bitNum == FRAMEBUFFER_BIN_WIDTH) ? ~0ul : ((1ul << bitNum) - 1) << x0;
+                for (int row = yMin; row <= yMax; ++row) {
+                    ulong fbMask = frameBufBin[row];
+                    if ((~fbMask & rowMask) > 0)
+                        return true;
+                }
+
+                return false;
             }
         }
         #endregion
