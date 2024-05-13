@@ -720,7 +720,7 @@ namespace ViE.SOC.Runtime {
                 int lowestRow = (int)math.round(lowestVertex.y) + FRAMEBUFFER_HEIGHT / 2;
                 int beginRowDiff = -lowestRow;
                 int beginRow = math.max(lowestRow, 0);
-                int middleRow = math.min((int)math.round(midVertex.y) + FRAMEBUFFER_HEIGHT / 2, FRAMEBUFFER_HEIGHT - 1);
+                int middleRow = math.min((int)math.round(midVertex.y) + FRAMEBUFFER_HEIGHT / 2, FRAMEBUFFER_HEIGHT);
                 float xLeft = lowestVertex.x + FRAMEBUFFER_WIDTH / 2;
                 float xRight = lowestVertex.x + FRAMEBUFFER_WIDTH / 2;
 
@@ -730,7 +730,7 @@ namespace ViE.SOC.Runtime {
                 }
 
                 for (int row = beginRow; row < middleRow; row++, xLeft += leftGradient, xRight += rightGradient) {
-                    SetBinRowMask(row, xLeft, xRight);
+                    SetBinRowMask(row, (int)math.floor(xLeft), (int)math.ceil(xRight));
                 }
 
                 float4 leftVertex = default;
@@ -752,13 +752,19 @@ namespace ViE.SOC.Runtime {
                 xLeft += FRAMEBUFFER_WIDTH / 2;
                 xRight += FRAMEBUFFER_WIDTH / 2;
                 beginRow = math.max((int)math.round(midVertex.y) + FRAMEBUFFER_HEIGHT / 2, 0);
-                int maxRow = math.min((int)math.round(math.min(FRAMEBUFFER_HEIGHT, highestVertex.y + FRAMEBUFFER_HEIGHT / 2)), FRAMEBUFFER_HEIGHT - 1);
+                beginRowDiff = -beginRow;
+                if (beginRowDiff > 0) {
+                    xLeft += beginRowDiff * leftGradient;
+                    xRight += beginRowDiff * rightGradient;
+                }
+
+                int maxRow = math.min((int)math.round(math.min(FRAMEBUFFER_HEIGHT, highestVertex.y + FRAMEBUFFER_HEIGHT / 2)), FRAMEBUFFER_HEIGHT);
                 for (int row = beginRow; row < maxRow; row++, xLeft += leftGradient, xRight += rightGradient) {
-                    SetBinRowMask(row, xLeft, xRight);
+                    SetBinRowMask(row, (int)math.floor(xLeft), (int)math.ceil(xRight));
                 }
             }
 
-            private void SetBinRowMask(int row, float xLeft, float xRight) {
+            private void SetBinRowMask(int row, int xLeft, int xRight) {
                 ulong fstFbMask = fbBin0[row];
                 if (fstFbMask != ~0ul) {
                     ulong rowMask = ComputeBinRowMask(0, xLeft, xRight);
@@ -792,9 +798,9 @@ namespace ViE.SOC.Runtime {
                 }
             }
 
-            private ulong ComputeBinRowMask(int binMinX, float fx0, float fx1) {
-                int x0 = (int)math.round(fx0) - binMinX;
-                int x1 = (int)math.round(fx1) - binMinX;
+            private ulong ComputeBinRowMask(int binMinX, int fx0, int fx1) {
+                int x0 = fx0 - binMinX;
+                int x1 = fx1 - binMinX;
                 x0 = math.max(0, x0);
                 x1 = math.min(FRAMEBUFFER_BIN_WIDTH - 1, x1);
                 var bitNum = (x1 - x0) + 1;
