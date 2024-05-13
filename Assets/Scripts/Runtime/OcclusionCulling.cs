@@ -339,7 +339,7 @@ namespace ViE.SOC.Runtime {
                     cullingOccluderTriList.Add(new int4(tempTriList[j], tempTriList[j + 1], tempTriList[j + 2], triCount));
                 }
 
-                triCount += tempTriCount;
+                triCount += tempTriCount / 3;
                 Profiler.EndSample();
 
                 Profiler.BeginSample("[ViE] OccluderTransfer-InnerLoop");
