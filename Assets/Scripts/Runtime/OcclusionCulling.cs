@@ -476,8 +476,6 @@ namespace ViE.SOC.Runtime {
 
             dependency = new ScreenTrisSortJob() {
                 occluderScreenTriList = occluderScreenTriList,
-                occludeeScreenTriArr = occludeeScreenTriArr,
-                occludeeTriCount = occludeeTriCount,
             }.Schedule(dependency);
         }
 
@@ -618,12 +616,9 @@ namespace ViE.SOC.Runtime {
         [BurstCompile]
         private struct ScreenTrisSortJob : IJob {
             public NativeList<TriangleInfo> occluderScreenTriList;
-            public NativeArray<TriangleInfo> occludeeScreenTriArr;
-            public int occludeeTriCount;
 
             public unsafe void Execute() {
                 NativeSortExtension.Sort((TriangleInfo*)occluderScreenTriList.GetUnsafePtr(), occluderScreenTriList.Length, new TriangleDepthSorter(false));
-                NativeSortExtension.Sort((TriangleInfo*)occludeeScreenTriArr.GetUnsafePtr(), occludeeTriCount, new TriangleDepthSorter(true));
             }
         }
 
