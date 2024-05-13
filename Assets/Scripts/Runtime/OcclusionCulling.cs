@@ -320,7 +320,7 @@ namespace ViE.SOC.Runtime {
             #region Occluder Transfer
             int occluderVertexArrLength = 0;
             int mMatrixIdx = 0;
-            int triCount = 0;
+            int vertexStartIdx = 0;
 
             for (int i = 0, count = occluderList.Length; i < count; i++) {
                 var occluder = occluderList[i];
@@ -336,20 +336,22 @@ namespace ViE.SOC.Runtime {
                 mesh.GetTriangles(tempTriList, 0);
                 int tempTriCount = tempTriList.Count;
                 for (int j = 0; j < tempTriCount; j += 3) {
-                    cullingOccluderTriList.Add(new int4(tempTriList[j], tempTriList[j + 1], tempTriList[j + 2], triCount));
+                    cullingOccluderTriList.Add(new int4(tempTriList[j], tempTriList[j + 1], tempTriList[j + 2], vertexStartIdx));
                 }
 
-                triCount += tempTriCount / 3;
                 Profiler.EndSample();
 
                 Profiler.BeginSample("[ViE] OccluderTransfer-InnerLoop");
-                for (int j = 0, vertexCount = cullingOccluderVertexList.Count; j < vertexCount; j++) {
+                int vertexCount = cullingOccluderVertexList.Count;
+                for (int j = 0; j < vertexCount; j++) {
                     Vector3 vertex = cullingOccluderVertexList[j];
                     cullingOccluderVertexTempArr[occluderVertexArrLength++] = new CullingVertexInfo() {
                         vertex = vertex,
                         modelMatrixIndex = mMatrixIdx,
                     };
                 }
+
+                vertexStartIdx += vertexCount;
                 Profiler.EndSample();
 
                 Profiler.BeginSample("[ViE] OccluderTransfer-GetLocalToWorldMatrix");
