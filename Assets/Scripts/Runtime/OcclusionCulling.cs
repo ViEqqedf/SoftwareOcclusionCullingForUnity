@@ -95,14 +95,14 @@ namespace ViE.SOC.Runtime {
             occluderScreenTriList = new NativeList<TriangleInfo>(DEFAULT_CONTAINER_SIZE / 3, Allocator.Persistent);
             occludeeScreenTriArr = new NativeArray<TriangleInfo>(DEFAULT_CONTAINER_SIZE / 3, Allocator.Persistent);
 
-            frameBufferFstBin = new NativeArray<ulong>(128, Allocator.Persistent);
-            frameBufferSndBin = new NativeArray<ulong>(128, Allocator.Persistent);
-            frameBufferTrdBin = new NativeArray<ulong>(128, Allocator.Persistent);
-            frameBufferFthBin = new NativeArray<ulong>(128, Allocator.Persistent);
-            frameBufferFstTriBin = new NativeArray<TriangleInfo>(128, Allocator.Persistent);
-            frameBufferSndTriBin = new NativeArray<TriangleInfo>(128, Allocator.Persistent);
-            frameBufferTrdTriBin = new NativeArray<TriangleInfo>(128, Allocator.Persistent);
-            frameBufferFthTriBin = new NativeArray<TriangleInfo>(128, Allocator.Persistent);
+            frameBufferFstBin = new NativeArray<ulong>(FRAMEBUFFER_HEIGHT, Allocator.Persistent);
+            frameBufferSndBin = new NativeArray<ulong>(FRAMEBUFFER_HEIGHT, Allocator.Persistent);
+            frameBufferTrdBin = new NativeArray<ulong>(FRAMEBUFFER_HEIGHT, Allocator.Persistent);
+            frameBufferFthBin = new NativeArray<ulong>(FRAMEBUFFER_HEIGHT, Allocator.Persistent);
+            frameBufferFstTriBin = new NativeArray<TriangleInfo>(FRAMEBUFFER_HEIGHT, Allocator.Persistent);
+            frameBufferSndTriBin = new NativeArray<TriangleInfo>(FRAMEBUFFER_HEIGHT, Allocator.Persistent);
+            frameBufferTrdTriBin = new NativeArray<TriangleInfo>(FRAMEBUFFER_HEIGHT, Allocator.Persistent);
+            frameBufferFthTriBin = new NativeArray<TriangleInfo>(FRAMEBUFFER_HEIGHT, Allocator.Persistent);
             occludeeVisibilityResultArr = new NativeArray<bool>(DEFAULT_CONTAINER_SIZE / 3, Allocator.Persistent);
         }
 
@@ -166,7 +166,7 @@ namespace ViE.SOC.Runtime {
         }
 
         private void TestingDrawRT() {
-            Texture2D tex = new Texture2D(256, 128);
+            Texture2D tex = new Texture2D(FRAMEBUFFER_WIDTH, FRAMEBUFFER_HEIGHT);
             if (RenderTexture.active == null) {
                 RenderTexture.active = frameBufferRT;
             }
@@ -628,7 +628,7 @@ namespace ViE.SOC.Runtime {
         private unsafe void Rasterization(int occluderTriCount, int occludeeTriCount) {
             UnsafeUtility.MemClear(occludeeVisibilityResultArr.GetUnsafePtr(), DEFAULT_CONTAINER_SIZE / 3 * sizeof(bool));
 
-            int size = 128 * sizeof(ulong);
+            int size = FRAMEBUFFER_HEIGHT * sizeof(ulong);
             UnsafeUtility.MemClear(frameBufferFstBin.GetUnsafePtr(), size);
             UnsafeUtility.MemClear(frameBufferSndBin.GetUnsafePtr(), size);
             UnsafeUtility.MemClear(frameBufferTrdBin.GetUnsafePtr(), size);
