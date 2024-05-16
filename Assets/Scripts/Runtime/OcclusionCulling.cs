@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.IO;
 using Unity.Burst;
 using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
@@ -189,6 +190,23 @@ namespace ViE.SOC.Runtime {
 
             tex.Apply();
             Graphics.Blit(tex, frameBufferRT);
+
+            // long timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            // string filePath = $"E:/CullingTest/{timestamp}_{occluderScreenTriList.Length}";
+            // byte[] bytes = tex.EncodeToPNG();
+            // File.WriteAllBytes($"{filePath.Insert(15, "Image/")}.png", bytes);
+            //
+            // using (StreamWriter writer = new StreamWriter($"{filePath.Insert(15, "Text/")}.txt")) {
+            //     for (int i = 0, count = occluderScreenTriList.Length; i < count; i++) {
+            //         TriangleInfo tri = occluderScreenTriList[i];
+            //
+            //         writer.WriteLine($"↓↓↓{i}↓↓↓");
+            //         writer.WriteLine($"v0: {tri.v0}");
+            //         writer.WriteLine($"v1: {tri.v1}");
+            //         writer.WriteLine($"v2: {tri.v2}");
+            //         writer.WriteLine($"↑↑↑{i}↑↑↑");
+            //     }
+            // }
         }
 
         private void CullingReset() {
@@ -289,8 +307,8 @@ namespace ViE.SOC.Runtime {
                 }
             }
 
-            OccluderSorter occluderSorter = new OccluderSorter();
-            occluderList.Sort(occluderSorter);
+            // OccluderSorter occluderSorter = new OccluderSorter();
+            // occluderList.Sort(occluderSorter);
         }
 
         private struct OccluderSorter : IComparer<CullingItem> {
@@ -530,10 +548,6 @@ namespace ViE.SOC.Runtime {
                         v2 = screenTrd;
                     }
 
-                    if (v2.x > v1.x) {
-                        (v1, v2) = (v2, v1);
-                    }
-
                     // mid vertex
                     short midVertexIdx = v1.y < v2.y ? (short)1 : (short)2;
 
@@ -712,8 +726,8 @@ namespace ViE.SOC.Runtime {
 
                 float leftGradient = 0;
                 float rightGradient = 0;
-                float midGradient = CullingUtils.CalculateSlope(lowestVertex, midVertex);
-                float highestGradient = CullingUtils.CalculateSlope(lowestVertex, highestVertex);
+                CullingUtils.CalculateSlope(lowestVertex, midVertex, out float midGradient);
+                CullingUtils.CalculateSlope(lowestVertex, highestVertex, out float highestGradient);
 
                 if (xMiddleOtherSide > midVertex.x) {
                     leftGradient = midGradient;
@@ -723,10 +737,10 @@ namespace ViE.SOC.Runtime {
                     rightGradient = midGradient;
                 }
 
-                int lowestRow = (int)math.round(lowestVertex.y) + FRAMEBUFFER_HEIGHT / 2;
+                int lowestRow = (int)math.floor(lowestVertex.y) + FRAMEBUFFER_HEIGHT / 2;
                 int beginRowDiff = -lowestRow;
                 int beginRow = math.max(lowestRow, 0);
-                int middleRow = math.min((int)math.round(midVertex.y) + FRAMEBUFFER_HEIGHT / 2, FRAMEBUFFER_HEIGHT);
+                int middleRow = math.min((int)math.floor(midVertex.y) + FRAMEBUFFER_HEIGHT / 2, FRAMEBUFFER_HEIGHT - 1);
                 float xLeft = lowestVertex.x + FRAMEBUFFER_WIDTH / 2;
                 float xRight = lowestVertex.x + FRAMEBUFFER_WIDTH / 2;
 
@@ -753,18 +767,18 @@ namespace ViE.SOC.Runtime {
                     rightVertex = new float4(xMiddleOtherSide, midVertex.y, 0, 0);
                 }
 
-                leftGradient = CullingUtils.CalculateSlope(leftVertex, highestVertex);
-                rightGradient = CullingUtils.CalculateSlope(rightVertex, highestVertex);
+                CullingUtils.CalculateSlope(leftVertex, highestVertex, out leftGradient);
+                CullingUtils.CalculateSlope(rightVertex, highestVertex, out rightGradient);
                 xLeft += FRAMEBUFFER_WIDTH / 2;
                 xRight += FRAMEBUFFER_WIDTH / 2;
-                beginRow = math.max((int)math.round(midVertex.y) + FRAMEBUFFER_HEIGHT / 2, 0);
+                beginRow = math.max((int)math.floor(midVertex.y) + FRAMEBUFFER_HEIGHT / 2, 0);
                 beginRowDiff = -beginRow;
                 if (beginRowDiff > 0) {
                     xLeft += beginRowDiff * leftGradient;
                     xRight += beginRowDiff * rightGradient;
                 }
 
-                int maxRow = math.min((int)math.round(math.min(FRAMEBUFFER_HEIGHT, highestVertex.y + FRAMEBUFFER_HEIGHT / 2)), FRAMEBUFFER_HEIGHT);
+                int maxRow = (int)math.min(FRAMEBUFFER_HEIGHT - 1, highestVertex.y + FRAMEBUFFER_HEIGHT / 2);
                 for (int row = beginRow; row < maxRow; row++, xLeft += leftGradient, xRight += rightGradient) {
                     SetBinRowMask(row, (int)math.floor(xLeft), (int)math.ceil(xRight));
                 }
@@ -847,11 +861,11 @@ namespace ViE.SOC.Runtime {
                 midVertex += new float4(FRAMEBUFFER_WIDTH / 2, FRAMEBUFFER_HEIGHT / 2, 0, 0);
                 highestVertex += new float4(FRAMEBUFFER_WIDTH / 2, FRAMEBUFFER_HEIGHT / 2, 0, 0);
 
-                int yMin = (int)math.round(math.max(0, lowestVertex.y));
-                int yMax = (int)math.round(math.min(FRAMEBUFFER_HEIGHT, highestVertex.y));
+                int yMin = (int)math.floor(math.max(0, lowestVertex.y));
+                int yMax = (int)math.ceil(math.min(FRAMEBUFFER_HEIGHT, highestVertex.y));
 
-                int x0 = (int)math.round(math.max(lowestVertex.x - binMinX, 0));
-                int x1 = (int)math.round(math.min(midVertex.x - binMinX, FRAMEBUFFER_BIN_WIDTH - 1));
+                int x0 = (int)math.floor(math.max(lowestVertex.x - binMinX, 0));
+                int x1 = (int)math.ceil(math.min(midVertex.x - binMinX, FRAMEBUFFER_BIN_WIDTH - 1));
                 if (x0 > x1) {
                     return false;
                 }

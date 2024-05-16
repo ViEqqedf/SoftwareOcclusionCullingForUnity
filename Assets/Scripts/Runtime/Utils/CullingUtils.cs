@@ -90,8 +90,15 @@ namespace ViE.SOC.Runtime.Utils {
             return false;
         }
 
-        public static float CalculateSlope(float4 fst, float4 snd) {
-            return (fst.x - snd.x) / (fst.y - snd.y);
+        public static bool CalculateSlope(float4 fst, float4 snd, out float result) {
+            result = default;
+
+            if (fst.y == snd.y) {
+                return false;
+            } else {
+                result = (fst.x - snd.x) / (fst.y - snd.y);
+                return true;
+            }
         }
 
         public static float GetXOnSameHorizontal(float4 fst, float4 snd, float targetY) {
