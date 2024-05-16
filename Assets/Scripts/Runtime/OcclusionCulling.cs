@@ -221,6 +221,10 @@ namespace ViE.SOC.Runtime {
 
             MeshRenderer[] mrs = FindObjectsByType<MeshRenderer>(FindObjectsInactive.Include, FindObjectsSortMode.None);
             foreach (var mr in mrs) {
+                if (!mr.gameObject.activeInHierarchy) {
+                    continue;
+                }
+
                 var bounds = mr.bounds;
                 float3 center = bounds.center;
                 float radius = bounds.extents.magnitude;
